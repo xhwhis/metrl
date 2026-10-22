@@ -1,0 +1,24 @@
+[package]
+name = "metrl-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "metrl-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true }
+error-stack = { workspace = true }
+metrl-api = { workspace = true }
+metrl-config = { workspace = true }
+metrl-telemetry = { workspace = true }
+metrl-utils = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

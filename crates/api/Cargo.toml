@@ -1,0 +1,16 @@
+[package]
+name = "metrl-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }

@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: taiki-e/install-action@cargo-shear
+      - uses: taiki-e/install-action@taplo
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
+
+      - name: install dependencies
+        run: |
+          rustc +nightly --version
+          cargo +nightly --version
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/astral-sh/hawk/releases/latest/download/cargo-hawk-installer.sh | sh
+          uv sync --locked
+
+      - name: cargo shear
+        run: cargo +nightly shear
+
+      - name: spell check
+        uses: crate-ci/typos@v1
+
+      - name: taplo
+        run: |
+          taplo check
+          taplo fmt --check --diff
+
+      - name: cargo fmt
+        run: cargo +nightly fmt --all --check
+
+      - name: clippy lint
+        run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: hawk
+        run: cargo +1.99.0 hawk check -D warnings --exclude-crate metrl_proto
+
+      - name: ruff
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+
+      - name: ty
+        run: |
+          uv run --no-sync maturin develop --uv --generate-stubs
+          uv run --no-sync ty check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, nightly]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: taiki-e/install-action@nextest
+
+      - name: install dependencies
+        run: |
+          rustc --version
+          cargo --version
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+          docker compose up -d --wait postgres
+
+      - name: cargo build
+        run: cargo build --workspace --all-targets --all-features
+
+      - name: cargo nextest
+        run: cargo nextest run --workspace --all-targets --all-features --no-tests=pass

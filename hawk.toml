@@ -1,0 +1,14 @@
+[[production]]
+package = "metrl-bin"
+bin = "metrl-server"
+reason = "control-plane server"
+
+[[production]]
+package = "metrl-py"
+lib = "_core"
+reason = "Python extension module metrl._core"
+
+[[exclude]]
+crate = "metrl_api"
+module = "tinker_public"
+reason = "generated from proto/tinker.proto"

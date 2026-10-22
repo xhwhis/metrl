@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package tinker_public;
+
+enum StopReason {
+  STOP_REASON_STOP = 0;
+  STOP_REASON_LENGTH = 1;
+}
+
+enum DType {
+  DTYPE_UNSPECIFIED = 0;
+  DTYPE_FLOAT32 = 1;
+  DTYPE_INT64 = 2;
+  DTYPE_INT32 = 3;
+  DTYPE_BFLOAT16 = 4;
+}
+
+message SampleResponse {
+  repeated SampledSequence sequences = 1;
+  optional bytes prompt_logprobs = 2;
+  optional TopkLogprobs topk_prompt_logprobs = 3;
+  int32 prompt_cache_hit_tokens = 4;
+  optional Tensor target_prompt_logprobs = 5;
+  optional PromptAltTokens prompt_alt_tokens = 6;
+}
+
+message PromptAltTokens {
+  Tensor tokens = 1;
+  Tensor logprobs = 2;
+}
+
+message SampledSequence {
+  StopReason stop_reason = 1;
+  bytes tokens = 2;
+  optional bytes logprobs = 3;
+  optional TopkLogprobs topk_sampled_logprobs = 4;
+}
+
+message TopkLogprobs {
+  bytes token_ids = 1;
+  bytes logprobs = 2;
+  uint32 k = 3;
+  uint32 length = 4;
+}
+
+message SparseCsr {
+  bytes values = 1;
+  bytes crow_indices = 2;
+  bytes col_indices = 3;
+}
+
+message Tensor {
+  oneof encoding {
+    bytes dense = 1;
+    SparseCsr sparse_csr = 2;
+  }
+  DType dtype = 3;
+  repeated int64 shape = 4;
+}
+
+message BatchedTensor {
+  bytes data = 1;
+  bytes offsets = 2;
+  DType dtype = 3;
+  repeated int64 trailing_shape = 4;
+}
+
+message ArrayRecord {
+  string type_tag = 1;
+  map<string, BatchedTensor> fields = 2;
+  int64 num_datums = 3;
+}
+
+message ForwardBackwardOutput {
+  string loss_fn_output_type = 1;
+  repeated ArrayRecord loss_fn_outputs = 2;
+  map<string, double> metrics = 3;
+}
+
+message ForwardBackwardRequest {
+  string model_id = 1;
+  int32 seq_id = 2;
+  repeated Datum data = 3;
+  string loss_fn = 4;
+  map<string, double> loss_fn_config = 5;
+  bool forward_only = 6;
+  map<string, LossConfigValue> loss_fn_config_v2 = 7;
+}
+
+message LossConfigValue {
+  oneof value {
+    double number = 1;
+    string text = 2;
+  }
+}
+
+message Datum {
+  repeated Chunk model_input = 1;
+  map<string, Tensor> loss_fn_inputs = 2;
+  repeated ProvenanceSpan model_input_spans = 3;
+  repeated ProvenanceSpan loss_fn_input_spans = 4;
+}
+
+message ProvenanceSpan {
+  oneof span {
+    PromptProvenanceSpan prompt_tokens = 1;
+    SampledProvenanceSpan sampled_tokens = 2;
+  }
+}
+
+message PromptProvenanceSpan {
+  string sequence_id = 1;
+  int64 offset = 2;
+  int64 length = 3;
+}
+
+message SampledProvenanceSpan {
+  string sequence_id = 1;
+  int64 offset = 2;
+  int64 length = 3;
+}
+
+message Chunk {
+  oneof chunk {
+    EncodedTextChunk encoded_text = 1;
+    ImageChunk image = 2;
+    DmelChunk dmel = 3;
+  }
+}
+
+message EncodedTextChunk {
+  bytes tokens = 1;
+}
+
+message ImageChunk {
+  bytes data = 1;
+  string format = 2;
+  optional int32 expected_tokens = 3;
+  optional ImageDimensions override_dimensions = 4;
+}
+
+message ImageDimensions {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+message DmelChunk {
+  bytes dmel = 1;
+}
+
+message SamplingParams {
+  optional int32 max_tokens = 1;
+  optional uint64 seed = 2;
+  optional float temperature = 3;
+  optional int32 top_k = 4;
+  optional float top_p = 5;
+  oneof stop {
+    StopStrings stop_strs = 6;
+    StopTokens stop_tokens = 7;
+  }
+}
+
+message StopStrings {
+  repeated string values = 1;
+}
+
+message StopTokens {
+  repeated int32 values = 1;
+}

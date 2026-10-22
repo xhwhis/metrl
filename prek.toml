@@ -1,0 +1,47 @@
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all --check"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "taplo"
+name = "taplo"
+language = "system"
+entry = "taplo fmt --check"
+types = ["toml"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "typos"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+language = "system"
+entry = "uv run --no-sync ruff check"
+types_or = ["python", "pyi"]
+
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+language = "system"
+entry = "uv run --no-sync ruff format --check"
+types_or = ["python", "pyi"]
+
+[[repos.hooks]]
+id = "ty"
+name = "ty"
+language = "system"
+entry = "uv run --no-sync ty check"
+types_or = ["python", "pyi"]
+pass_filenames = false

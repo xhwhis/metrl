@@ -1,0 +1,60 @@
+[project]
+name = "metrl"
+version = "0.0.0"
+description = "Metrl worker runtime and engine protocols"
+license = "Unlicense"
+requires-python = ">=3.14"
+dependencies = ["uvloop>=0.23"]
+
+[project.scripts]
+metrl-worker = "metrl.worker.main:main"
+
+[dependency-groups]
+dev = [
+  "maturin>=1.15",
+  "metrl-engine-mlx",
+  "metrl-engine-mock",
+  "pytest>=9.1",
+  "ruff>=0.17",
+  "tinker>=0.35",
+  "types-protobuf>=7.35",
+  "ty>=0.0.90",
+]
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "crates/bindings/python/Cargo.toml"
+python-source = "python"
+module-name = "metrl._core"
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "crates/**/*.rs" },
+  { file = "crates/**/Cargo.toml" },
+  { file = "proto/*.proto" },
+]
+
+[tool.uv.workspace]
+members = ["engines/*"]
+
+[tool.uv.sources]
+metrl-engine-mlx = { workspace = true }
+metrl-engine-mock = { workspace = true }
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ANN", "B", "E", "F", "I", "PGH", "RUF", "SIM", "UP", "W"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

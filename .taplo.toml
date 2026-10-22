@@ -1,0 +1,48 @@
+exclude = [".venv/**", "target/**"]
+
+[formatting]
+allowed_blank_lines = 1
+
+[[rule]]
+include = ["**/Cargo.toml"]
+keys = [
+  "dependencies",
+  "dev-dependencies",
+  "build-dependencies",
+  "workspace.dependencies",
+  "workspace.lints.rust",
+  "workspace.lints.clippy",
+]
+formatting = { reorder_keys = true }
+
+[[rule]]
+include = ["**/Cargo.toml"]
+schema = { path = "https://json.schemastore.org/cargo.json" }
+
+[[rule]]
+include = ["**/Cargo.toml"]
+schema = { path = ".config/workspace-schema.json" }
+
+[[rule]]
+include = ["**/pyproject.toml"]
+schema = { path = "https://www.schemastore.org/pyproject.json" }
+
+[[rule]]
+include = [".cargo/config.toml"]
+schema = { path = "https://www.schemastore.org/cargo-config.json" }
+
+[[rule]]
+include = [".rustfmt.toml"]
+schema = { path = "https://www.schemastore.org/rustfmt.json" }
+
+[[rule]]
+include = [".taplo.toml"]
+schema = { path = "https://www.schemastore.org/taplo.json" }
+
+[[rule]]
+include = [".typos.toml"]
+schema = { path = "https://raw.githubusercontent.com/crate-ci/typos/master/config.schema.json" }
+
+[[rule]]
+include = ["prek.toml"]
+schema = { path = "https://www.schemastore.org/prek.json" }

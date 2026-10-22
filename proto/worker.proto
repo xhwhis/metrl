@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package metrl.worker;
+
+// Served by every worker; servers dial it.
+service WorkerService {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  string worker_id = 1;
+  repeated Base bases = 2;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_TRAINER = 1;
+  ROLE_SAMPLER = 2;
+}
+
+message Base {
+  string name = 1;
+  string revision = 2;
+  string arch = 3;
+  string tokenizer_id = 4;
+  uint32 max_context_length = 5;
+  uint32 max_lora_rank = 6;
+  repeated Role roles = 7;
+}

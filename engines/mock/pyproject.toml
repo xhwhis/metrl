@@ -1,0 +1,14 @@
+[project]
+name = "metrl-engine-mock"
+version = "0.0.0"
+description = "Deterministic Metrl engine for tests"
+license = "Unlicense"
+requires-python = ">=3.14"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "metrl.engines.mock"

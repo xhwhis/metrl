@@ -1,0 +1,15 @@
+[package]
+name = "metrl-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+error-stack = { workspace = true }
+metrl-proto = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }

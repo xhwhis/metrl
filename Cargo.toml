@@ -1,0 +1,109 @@
+[workspace]
+members = [
+  "crates/api",
+  "crates/bin",
+  "crates/bindings/python",
+  "crates/common/config",
+  "crates/common/error",
+  "crates/common/proto",
+  "crates/common/telemetry",
+  "crates/common/types",
+  "crates/common/utils",
+  "crates/meta",
+  "crates/object",
+  "crates/scheduler",
+  "crates/server",
+  "crates/worker",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Unlicense"
+
+[workspace.lints.rust]
+macro_use_extern_crate = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused = { level = "warn", priority = -1 }
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+alloc_instead_of_core = "warn"
+doc_markdown = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inconsistent_struct_constructor = "warn"
+manual_assert = "warn"
+manual_let_else = "warn"
+manual_ok_or = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+redundant_clone = "warn"
+redundant_type_annotations = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+str_to_string = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+unnested_or_patterns = "warn"
+unused_async = "warn"
+unwrap_used = "warn"
+used_underscore_binding = "warn"
+
+[workspace.dependencies]
+# workspace crates
+metrl-api = { path = "crates/api" }
+metrl-config = { path = "crates/common/config" }
+metrl-proto = { path = "crates/common/proto" }
+metrl-telemetry = { path = "crates/common/telemetry" }
+metrl-utils = { path = "crates/common/utils" }
+metrl-worker = { path = "crates/worker" }
+
+# crates.io
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+config = { version = "0.15", default-features = false, features = ["toml"] }
+error-stack = { version = "0.8", default-features = false, features = ["std"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+prost = "0.14"
+pyo3 = "0.30"
+pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+] }
+tokio-util = "0.7"
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.metadata.cargo-shear]
+ignored = ["prost", "tonic-prost"]
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+debug = "line-tables-only"
+lto = "fat"
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true
