@@ -17,6 +17,7 @@ clap = { workspace = true }
 error-stack = { workspace = true }
 metrl-api = { workspace = true }
 metrl-config = { workspace = true }
+metrl-server = { workspace = true }
 metrl-telemetry = { workspace = true }
 metrl-utils = { workspace = true }
 thiserror = { workspace = true }

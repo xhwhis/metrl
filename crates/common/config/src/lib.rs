@@ -19,6 +19,8 @@ pub struct ConfigError {
 pub struct ServerConfig {
     pub http_addr: SocketAddr,
     pub system_addr: SocketAddr,
+    pub worker_endpoint: String,
+    pub auth_keys: String,
 }
 
 pub fn load<T: DeserializeOwned>(path: &Path) -> Result<T, Report<ConfigError>> {

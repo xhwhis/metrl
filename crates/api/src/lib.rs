@@ -1,11 +1,8 @@
 //! Tinker-compatible HTTP API.
 
+mod sampling;
 mod service;
-#[allow(clippy::doc_markdown)]
+#[allow(clippy::doc_markdown, clippy::trivially_copy_pass_by_ref)]
 pub mod tinker_public;
 
-use axum::Router;
-
-pub fn router() -> Router {
-    Router::new().nest("/api/v1", service::router())
-}
+pub use service::router;

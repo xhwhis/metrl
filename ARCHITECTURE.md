@@ -4,6 +4,44 @@ Metrl is an RL orchestration layer that serves the Tinker HTTP API. Rust servers
 API, scheduling, tasks, and execution history. Python engines own compute and memory
 state. The task log makes training recoverable; user saves are durable snapshots.
 
+## Current implementation
+
+The first runnable slice is single-server, token-only sampling through the real Tinker
+SDK: HTTP → Rust server → gRPC worker → PyO3 → async Python mock sampler → protobuf
+future result. Sessions and results are in server memory, isolated by org. Retrying the
+same sampling session and sequence returns the same request; changed inputs return 400.
+Results expire after one hour. Session, sampler, and result counts are bounded.
+
+The mock supports `max_tokens` (1–256), `num_samples` (1–16), and `seed`, with prompts
+of 1–4096 nonnegative token IDs. Other sampling controls must remain at SDK defaults;
+unsupported options return 400 rather than being silently ignored. It generates
+deterministic tokens, not language-model output. No tokenizer is needed for token inputs.
+
+Training, Postgres/CDC, durable tasks, checkpoints, peer routing, MLX compute, and worker
+registration are not implemented yet. A server restart loses sessions and sample
+results. The sections below describe the target architecture, not completed features.
+
+From the repository root, run `just setup`, then start these in separate terminals:
+
+```sh
+uv run --no-sync metrl-worker --engine mock
+```
+
+```sh
+METRL_AUTH_KEYS='local:tml-local-development' cargo run -p metrl-bin --bin metrl-server
+```
+
+Connect with `tinker.ServiceClient(base_url="http://127.0.0.1:7580",
+api_key="tml-local-development")` and create a sampling client with `base_model="mock"`.
+`METRL_AUTH_KEYS` is a comma-separated list of `org:key` pairs, supplied only through
+the environment. `METRL_WORKER_ENDPOINT` overrides the default worker address.
+This slice does not need Postgres or an object store.
+
+`just test` builds both processes and runs the SDK sampling flow, interleaved orgs,
+HTTP retry/conflict and isolation checks, invalid inputs, and worker termination.
+
+## Target topology
+
 ```diagram
 ┌──────────┐ HTTP  ┌────────────────────┐ gRPC  ┌────────────────────────────┐
 │ Tinker   │──────▶│ server × N         │──────▶│ worker × M                 │

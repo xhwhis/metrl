@@ -34,8 +34,10 @@ async fn main() -> Result<(), Report<ServerError>> {
     let args = Args::parse();
     let system = metrl_telemetry::init().change_context(ServerError)?;
     let config: ServerConfig = metrl_config::load(&args.config).change_context(ServerError)?;
+    let sampling = metrl_server::Sampling::new(&config.worker_endpoint, &config.auth_keys)
+        .change_context(ServerError)?;
     tokio::try_join!(
-        serve(config.http_addr, metrl_api::router()),
+        serve(config.http_addr, metrl_api::router(sampling)),
         serve(config.system_addr, system),
     )?;
     Ok(())

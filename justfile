@@ -42,6 +42,9 @@ lint:
 
 test:
     cargo nextest run --workspace --all-targets --all-features --no-tests=pass
+    cargo build -p metrl-bin --bin metrl-server
+    uv run --no-sync maturin develop --uv --generate-stubs
+    uv run --no-sync pytest -q
 
 # Everything CI checks except the stable toolchain
 check: lint test

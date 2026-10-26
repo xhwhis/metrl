@@ -740,8 +740,13 @@ name = "metrl-api"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "error-stack",
+ "metrl-proto",
+ "metrl-server",
+ "metrl-types",
  "prost",
  "serde",
+ "serde_json",
  "tonic-prost-build",
 ]
 
@@ -754,6 +759,7 @@ dependencies = [
  "error-stack",
  "metrl-api",
  "metrl-config",
+ "metrl-server",
  "metrl-telemetry",
  "metrl-utils",
  "thiserror",
@@ -797,10 +803,13 @@ dependencies = [
 name = "metrl-py"
 version = "0.0.0"
 dependencies = [
+ "error-stack",
+ "metrl-proto",
  "metrl-worker",
  "pyo3",
  "pyo3-async-runtimes",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -810,6 +819,16 @@ version = "0.0.0"
 [[package]]
 name = "metrl-server"
 version = "0.0.0"
+dependencies = [
+ "error-stack",
+ "metrl-proto",
+ "metrl-types",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "metrl-telemetry"
@@ -825,6 +844,10 @@ dependencies = [
 [[package]]
 name = "metrl-types"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "uuid",
+]
 
 [[package]]
 name = "metrl-utils"
@@ -1768,6 +1791,18 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "uuid"
+version = "1.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+dependencies = [
+ "getrandom 0.4.3",
+ "js-sys",
+ "serde_core",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "valuable"

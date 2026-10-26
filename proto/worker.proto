@@ -5,6 +5,23 @@ package metrl.worker;
 // Served by every worker; servers dial it.
 service WorkerService {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc Sample(SampleRequest) returns (SampleResponse);
+}
+
+message SampleRequest {
+  string model_id = 1;
+  repeated int32 prompt = 2;
+  uint32 num_samples = 3;
+  uint32 max_length = 4;
+  uint64 seed = 5;
+}
+
+message SampleResponse {
+  repeated SampledSequence sequences = 1;
+}
+
+message SampledSequence {
+  repeated int32 tokens = 1;
 }
 
 message DescribeRequest {}

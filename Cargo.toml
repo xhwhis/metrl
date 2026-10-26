@@ -23,49 +23,72 @@ edition = "2024"
 license = "Unlicense"
 
 [workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+let_underscore_drop = "warn"
 macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+redundant_imports = "warn"
 single_use_lifetimes = "warn"
 trivial_casts = "warn"
 trivial_numeric_casts = "warn"
-unused = { level = "warn", priority = -1 }
-unused_extern_crates = "warn"
+unit_bindings = "warn"
+unused = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
+unused_qualifications = "warn"
 
 [workspace.lints.clippy]
-alloc_instead_of_core = "warn"
-doc_markdown = "warn"
-explicit_into_iter_loop = "warn"
-explicit_iter_loop = "warn"
-filter_map_next = "warn"
-flat_map_option = "warn"
-get_unwrap = "warn"
-implicit_clone = "warn"
-inconsistent_struct_constructor = "warn"
-manual_assert = "warn"
-manual_let_else = "warn"
+pedantic = { level = "warn", priority = -1 }
+assigning_clones = "allow"
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+clone_on_ref_ptr = "warn"
+collection_is_never_read = "warn"
+error_impl_error = "warn"
+exit = "warn"
+fallible_impl_from = "warn"
+future_not_send = "warn"
+if_then_some_else_none = "warn"
+let_underscore_must_use = "warn"
 manual_ok_or = "warn"
+map_err_ignore = "warn"
+missing_assert_message = "warn"
+needless_collect = "warn"
+needless_pass_by_ref_mut = "warn"
+or_fun_call = "warn"
 rc_buffer = "warn"
 rc_mutex = "warn"
+read_zero_byte_vec = "warn"
 redundant_clone = "warn"
+redundant_test_prefix = "warn"
 redundant_type_annotations = "warn"
-rest_pat_in_fully_bound_structs = "warn"
-str_to_string = "warn"
+set_contains_or_insert = "warn"
+significant_drop_in_scrutinee = "warn"
+significant_drop_tightening = "warn"
+string_add = "warn"
+string_slice = "warn"
 trait_duplication_in_bounds = "warn"
+try_err = "warn"
 type_repetition_in_bounds = "warn"
-uninlined_format_args = "warn"
-unnecessary_wraps = "warn"
-unnested_or_patterns = "warn"
-unused_async = "warn"
+unnecessary_rest_pattern = "warn"
+unused_peekable = "warn"
 unwrap_used = "warn"
-used_underscore_binding = "warn"
 
 [workspace.dependencies]
 # workspace crates
 metrl-api = { path = "crates/api" }
 metrl-config = { path = "crates/common/config" }
 metrl-proto = { path = "crates/common/proto" }
+metrl-server = { path = "crates/server" }
 metrl-telemetry = { path = "crates/common/telemetry" }
+metrl-types = { path = "crates/common/types" }
 metrl-utils = { path = "crates/common/utils" }
 metrl-worker = { path = "crates/worker" }
 
@@ -79,6 +102,7 @@ prost = "0.14"
 pyo3 = "0.30"
 pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = [
   "macros",
@@ -92,6 +116,7 @@ tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [workspace.metadata.cargo-shear]
 ignored = ["prost", "tonic-prost"]

@@ -9,8 +9,13 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
+error-stack = { workspace = true }
+metrl-proto = { workspace = true }
+metrl-server = { workspace = true }
+metrl-types = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

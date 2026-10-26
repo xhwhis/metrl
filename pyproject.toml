@@ -11,6 +11,7 @@ metrl-worker = "metrl.worker.main:main"
 
 [dependency-groups]
 dev = [
+  "httpx>=0.28",
   "maturin>=1.15",
   "metrl-engine-mlx",
   "metrl-engine-mock",
@@ -51,7 +52,28 @@ target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["ANN", "B", "E", "F", "I", "PGH", "RUF", "SIM", "UP", "W"]
+select = [
+  "ANN",
+  "ASYNC",
+  "B",
+  "C4",
+  "E",
+  "F",
+  "I",
+  "PERF",
+  "PGH",
+  "PTH",
+  "RET",
+  "RUF",
+  "SIM",
+  "T20",
+  "TID252",
+  "UP",
+  "W",
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ty.environment]
 python-version = "3.14"

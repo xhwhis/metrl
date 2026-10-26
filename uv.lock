@@ -319,6 +319,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "maturin" },
     { name = "metrl-engine-mlx" },
     { name = "metrl-engine-mock" },
@@ -334,6 +335,7 @@ requires-dist = [{ name = "uvloop", specifier = ">=0.23" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "maturin", specifier = ">=1.15" },
     { name = "metrl-engine-mlx", editable = "engines/mlx" },
     { name = "metrl-engine-mock", editable = "engines/mock" },

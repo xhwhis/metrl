@@ -12,6 +12,8 @@ name = "_core"
 crate-type = ["cdylib"]
 
 [dependencies]
+error-stack = { workspace = true }
+metrl-proto = { workspace = true }
 metrl-worker = { workspace = true }
 pyo3 = { workspace = true, features = [
   "experimental-async",
@@ -19,3 +21,4 @@ pyo3 = { workspace = true, features = [
 ] }
 pyo3-async-runtimes = { workspace = true }
 tokio-util = { workspace = true }
+tracing = { workspace = true }

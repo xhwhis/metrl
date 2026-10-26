@@ -47,20 +47,33 @@ Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `jus
 - Multi-tenancy: every row carries `org_id`, every query filters by it, cross-org access
   returns 404, and object keys start with `orgs/{org_id}/`.
 - Lint and type-check levels live only in the root config: `[workspace.lints]` in
-  `Cargo.toml`, and `[tool.ruff]` / `[tool.ty]` in `pyproject.toml`. Do not add
-  suppressions to source code: no `#[allow]`, `#[expect]`, `#[warn]`, `#[deny]`,
-  `#[forbid]` or their `cfg_attr` forms in Rust; no `# noqa`, `# type: ignore` or
-  `# ty: ignore` in Python. When a check fires, fix the code; silencing it to make
-  `just check` pass is not a fix. If a rule is wrong for this project, propose a
-  root config change and stop for review. The only exception is the module that
-  includes generated protobuf code.
+  `Cargo.toml` and `clippy.toml`, and `[tool.ruff]` / `[tool.ty]` in `pyproject.toml`.
+  Do not add suppressions to source code: no `#[allow]`, `#[expect]`, `#[warn]`,
+  `#[deny]`, `#[forbid]` or their `cfg_attr` forms in Rust; no `# noqa`,
+  `# type: ignore` or `# ty: ignore` in Python. When a check fires, fix the code;
+  silencing it to make `just check` pass is not a fix. If a rule is wrong for this
+  project, propose a root config change and stop for review. The only exception is
+  the module that includes generated protobuf code.
 - Code must build on stable Rust. Nightly is used only for rustfmt options.
 
 ## Code style
 
 - Plain data and functions. No builders. Add an abstraction or helper only when it names
   a real concept; repetition beats a vague `*_helper`.
-- Prefer more modules over large files.
+- Prefer more modules over large files. Non-leaf modules hold only `mod` declarations
+  and re-exports.
+- IDs are newtypes in `common/types`, never bare `String` or `Uuid`.
+- Use structs with named fields instead of tuples; single-field newtypes are fine.
+- A `bool` parameter is fine for a true two-sided flag; use an enum when the meaning is
+  not obvious at the call site.
+- No `impl Into<T>` parameters; callers convert.
+- Call free functions through their module (`mem::take`, not `take`). Import traits
+  inside the function that uses them unless the whole file does.
+- Keep the functional style: iterator chains, `match`, and expressions over mutable
+  loops where they read clearly.
+- `Arc` and `.clone()` are fine where ownership is really shared; never clone or wrap
+  in `Arc` just to silence a borrow or lifetime error. Fix the ownership instead.
+- `assert!` always carries a message that says why the condition holds.
 - Scheduler: `on_event(&mut State, now, Event) -> Vec<Effect>` and `next_deadline(&State)`.
   The model actor executes effects; all I/O lives there.
 - Errors use `error-stack`. Each crate has one error context and returns
@@ -107,6 +120,8 @@ Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `jus
 
 ## Git
 
+- Agents must not commit or push. When a commit is needed, provide a suggested
+  commit message only; the owner commits and pushes.
 - Commits: `<type>(<scope>): <summary>`, e.g. `feat(meta): decode pgoutput inserts`.
   - `type`: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ci`, `chore`.
   - `scope`: crate or package name without the `metrl-` prefix (`scheduler`, `meta`,
