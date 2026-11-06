@@ -8,9 +8,14 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+bytes = { workspace = true }
 error-stack = { workspace = true }
+metrl-meta = { workspace = true }
+metrl-object = { workspace = true }
 metrl-proto = { workspace = true }
+metrl-scheduler = { workspace = true }
 metrl-types = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

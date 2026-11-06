@@ -9,9 +9,12 @@ RPCs, heartbeats, and cancellation. Local development happens on Macs.
 
 - Engines implement async `Trainer` and `Sampler` Protocols. Blocking compute runs on a
   shared `ComputeThread` via `await compute.run(fn)`.
+- An engine raises `ValueError` for a request it cannot run as given; the message
+  reaches the user. Any other exception is a server error, and its text stays in the
+  worker log.
 - Python owns the event loop (uvloop).
 - One package per engine under `engines/`, imported as `metrl.engines.<name>` through
-  PEP 420 namespaces and selected by `METRL_ENGINE`.
+  PEP 420 namespaces and selected by `[engine] name` in `worker.toml`.
 - First engines: `mlx` for Apple silicon and `mock`, a deterministic engine with no
   dependencies whose outputs carry a state hash chain.
 

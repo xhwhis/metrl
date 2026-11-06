@@ -1,3 +1,10 @@
 http_addr = "0.0.0.0:7580"
+grpc_addr = "127.0.0.1:7581"
 system_addr = "0.0.0.0:7582"
-worker_endpoint = "http://127.0.0.1:7590"
+database_url = "postgres://metrl@127.0.0.1:5432/metrl"
+
+# The secret key comes from METRL_OBJECT__SECRET_ACCESS_KEY.
+[object]
+url = "s3://metrl"
+endpoint = "http://127.0.0.1:9000"
+access_key_id = "metrl"

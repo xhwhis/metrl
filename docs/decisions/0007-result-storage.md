@@ -8,8 +8,10 @@ I/O for a result the SDK can resubmit.
 
 ## Decision
 
-- Small training results go in `tasks.result jsonb`, with no size cutoff for them.
+- Small training results go in `tasks.outcome jsonb`, with no size cutoff for them.
 - Task inputs and fwd/bwd outputs go to the object store under `orgs/{org}/tasks/...`.
+  Each generation writes its own `g{generation}/output.pb`, so a fenced owner's
+  worker never overwrites the output the next owner records.
 - Sample results stay in the receiving server's memory with a 1h TTL and a byte cap.
 - Session heartbeats are kept in memory and flushed to Postgres every 30s.
 - Task outputs expire after 1h and then return 400. Sweep runs under a Postgres

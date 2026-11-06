@@ -8,10 +8,16 @@ pub struct OrgId(pub String);
 #[serde(transparent)]
 pub struct SessionId(pub Uuid);
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ModelId(pub Uuid);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct RequestId(pub Uuid);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ServerId(pub Uuid);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WorkerId(pub Uuid);

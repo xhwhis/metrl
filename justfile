@@ -10,17 +10,29 @@ setup:
     uv run --no-sync maturin develop --uv --generate-stubs
     prek install
 
-# Start Postgres and the object store
+# Start Postgres and the object store, and create the bucket
 up:
     docker compose up -d --wait
+    docker compose run --rm rustfs-init
 
-# Stop local dependencies and delete their data
+# Delete all local data and recreate the schema
 db-reset:
     docker compose down --volumes
+    docker compose up -d --wait
+    docker compose run --rm rustfs-init
+    cargo run -p metrl-bin --bin metrl-server -- migrate
 
 # Run the server against local dependencies
 dev: up
-    cargo run -p metrl-bin --bin metrl-server
+    METRL_OBJECT__SECRET_ACCESS_KEY=metrl-dev-secret cargo run -p metrl-bin --bin metrl-server
+
+# Run a worker with config/worker.toml against the local object store
+worker:
+    METRL_OBJECT__SECRET_ACCESS_KEY=metrl-dev-secret uv run --no-sync metrl-worker
+
+# Create an API key for an org and print it
+key org:
+    cargo run -q -p metrl-bin --bin metrl-server -- key create --org {{org}}
 
 fmt:
     cargo fmt --all
@@ -40,7 +52,7 @@ lint:
     uv run --no-sync ruff format --check .
     uv run --no-sync ty check
 
-test:
+test: up
     cargo nextest run --workspace --all-targets --all-features --no-tests=pass
     cargo build -p metrl-bin --bin metrl-server
     uv run --no-sync maturin develop --uv --generate-stubs

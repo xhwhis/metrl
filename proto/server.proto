@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package metrl.server;
+
+// Served by every server on its gRPC port. Workers register with any server;
+// the registration reaches every server through Postgres.
+service ServerService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Unregister(UnregisterRequest) returns (UnregisterResponse);
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+  // Address servers dial, as host:port.
+  string addr = 2;
+}
+
+message RegisterResponse {}
+
+message UnregisterRequest {
+  string worker_id = 1;
+  string addr = 2;
+}
+
+message UnregisterResponse {}

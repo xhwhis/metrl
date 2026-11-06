@@ -26,10 +26,10 @@ impl metrl_worker::Sampler for PythonSampler {
             )?;
             pyo3_async_runtimes::into_future_with_locals(&self.locals, coroutine.into_bound(py))
         })
-        .change_context(WorkerError)?;
-        let result = future.await.change_context(WorkerError)?;
+        .change_context(WorkerError::Failed)?;
+        let result = future.await.change_context(WorkerError::Failed)?;
         let sequences: Vec<Vec<i32>> =
-            Python::attach(|py| result.extract(py)).change_context(WorkerError)?;
+            Python::attach(|py| result.extract(py)).change_context(WorkerError::Failed)?;
         Ok(SampleResponse {
             sequences: sequences
                 .into_iter()

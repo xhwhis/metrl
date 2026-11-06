@@ -4,12 +4,12 @@ services:
     command: ["postgres", "-c", "wal_level=logical"]
     environment:
       POSTGRES_USER: metrl
-      POSTGRES_PASSWORD: metrl
       POSTGRES_DB: metrl
+      POSTGRES_HOST_AUTH_METHOD: trust
     ports: ["127.0.0.1:5432:5432"]
     volumes: [postgres:/var/lib/postgresql]
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "metrl"]
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "metrl"]
       interval: 2s
       retries: 30
 
@@ -20,6 +20,22 @@ services:
       RUSTFS_SECRET_KEY: metrl-dev-secret
     ports: ["127.0.0.1:9000:9000"]
     volumes: [rustfs:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      interval: 2s
+      retries: 30
+
+  rustfs-init:
+    image: rustfs/rc:v0.1.36
+    profiles: [init]
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - rc alias set local http://rustfs:9000 metrl metrl-dev-secret &&
+        rc bucket create local/metrl --ignore-existing
 
 volumes:
   postgres:

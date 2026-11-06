@@ -13,7 +13,9 @@ what they actually loaded.
   `max_lora_rank`, and `roles`; servers store them in `workers.bases`.
 - A different revision for an existing name is rejected.
 - `get_server_capabilities` aggregates live workers. CreateModel returns 400 when no live
-  worker serves the base. Models snapshot `base_model` and `base_revision`.
+  trainer serves the base or the rank exceeds its `max_lora_rank`. Models snapshot the
+  base's name, `revision`, `arch`, and `tokenizer_id`, so `get_info` answers after its
+  workers leave.
 
 ## Alternatives
 

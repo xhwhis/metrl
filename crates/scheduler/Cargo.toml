@@ -6,3 +6,11 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+metrl-types = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+uuid = { workspace = true }

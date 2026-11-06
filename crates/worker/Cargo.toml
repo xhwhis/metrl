@@ -8,8 +8,20 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+bytes = { workspace = true }
 error-stack = { workspace = true }
+metrl-config = { workspace = true }
+metrl-object = { workspace = true }
 metrl-proto = { workspace = true }
+metrl-types = { workspace = true }
+parking_lot = { workspace = true }
+prost = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }

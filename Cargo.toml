@@ -32,6 +32,7 @@ single_use_lifetimes = "warn"
 trivial_casts = "warn"
 trivial_numeric_casts = "warn"
 unit_bindings = "warn"
+unreachable_pub = "warn"
 unused = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
@@ -85,7 +86,10 @@ unwrap_used = "warn"
 # workspace crates
 metrl-api = { path = "crates/api" }
 metrl-config = { path = "crates/common/config" }
+metrl-meta = { path = "crates/meta" }
+metrl-object = { path = "crates/object" }
 metrl-proto = { path = "crates/common/proto" }
+metrl-scheduler = { path = "crates/scheduler" }
 metrl-server = { path = "crates/server" }
 metrl-telemetry = { path = "crates/common/telemetry" }
 metrl-types = { path = "crates/common/types" }
@@ -94,21 +98,41 @@ metrl-worker = { path = "crates/worker" }
 
 # crates.io
 axum = "0.8"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"] }
+deadpool-postgres = "0.14"
 error-stack = { version = "0.8", default-features = false, features = ["std"] }
+getrandom = "0.4"
+insta = "1"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+object_store = { version = "0.14", default-features = false, features = [
+  "aws",
+  "fs",
+] }
+parking_lot = "0.13"
+pgwire-replication = { version = "0.5", default-features = false, features = [
+  "scram",
+] }
+proptest = "1"
 prost = "0.14"
 pyo3 = "0.30"
 pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = [
   "macros",
   "net",
   "rt-multi-thread",
   "signal",
+  "sync",
+  "time",
+] }
+tokio-postgres = { version = "0.7", features = [
+  "with-serde_json-1",
+  "with-uuid-1",
 ] }
 tokio-util = "0.7"
 tonic = "0.14"
@@ -116,7 +140,8 @@ tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+uuid = { version = "1", features = ["serde", "v7"] }
 
 [workspace.metadata.cargo-shear]
 ignored = ["prost", "tonic-prost"]

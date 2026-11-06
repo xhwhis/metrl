@@ -67,8 +67,10 @@ jobs:
           uv run --no-sync maturin develop --uv --generate-stubs
           uv run --no-sync ty check
 
-      - name: sampling e2e
+      - name: e2e
         run: |
+          docker compose up -d --wait postgres rustfs
+          docker compose run --rm rustfs-init
           cargo +nightly build -p metrl-bin --bin metrl-server
           uv run --no-sync pytest -q
 

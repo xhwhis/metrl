@@ -6,3 +6,14 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+deadpool-postgres = { workspace = true }
+error-stack = { workspace = true }
+metrl-types = { workspace = true }
+pgwire-replication = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,1 @@
+DROP DATABASE :"name" WITH (FORCE)

@@ -1,0 +1,15 @@
+grpc_addr = "127.0.0.1:7590"
+servers = ["http://127.0.0.1:7581"]
+
+[engine]
+name = "mock"
+
+# The secret key comes from METRL_OBJECT__SECRET_ACCESS_KEY.
+[object]
+url = "s3://metrl"
+endpoint = "http://127.0.0.1:9000"
+access_key_id = "metrl"
+
+[[bases]]
+name = "mock"
+roles = ["trainer", "sampler"]

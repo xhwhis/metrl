@@ -13,7 +13,7 @@ deterministically.
 - It has two parts: `model/` for the per-model task log and `cluster/` for placement
   and fairness.
 - Model actors in `server` feed events, execute effects, and own all I/O.
-- `debug_assert!(state.invariants())` runs after every event.
+- State invariants are checked with `debug_assert!` after every event.
 
 ## Alternatives
 

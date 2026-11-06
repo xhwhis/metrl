@@ -1,79 +1,27 @@
 use axum::Json;
-use axum::extract::{FromRequest, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use error_stack::Report;
 use metrl_proto::worker::SampleRequest;
 use metrl_server::{SampleResult, Sampling, ServerError};
-use metrl_types::{ModelId, OrgId, RequestId, SessionId};
+use metrl_types::{ModelId, Role, SessionId};
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-pub(crate) struct ApiJson<T>(T);
+use crate::error::ApiError;
+use crate::extract::{ApiJson, Org};
 
-impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
-    type Rejection = Response;
-
-    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        Json::<T>::from_request(request, state)
-            .await
-            .map(|Json(value)| Self(value))
-            .map_err(|error| {
-                let status = match error.status() {
-                    StatusCode::UNPROCESSABLE_ENTITY => StatusCode::BAD_REQUEST,
-                    status => status,
-                };
-                (status, Json(json!({"error": error.body_text()}))).into_response()
-            })
-    }
-}
-
-pub(crate) struct ApiError(Report<ServerError>);
-
-impl From<Report<ServerError>> for ApiError {
-    fn from(report: Report<ServerError>) -> Self {
-        Self(report)
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let status = match self.0.current_context() {
-            ServerError::Invalid(_) => StatusCode::BAD_REQUEST,
-            ServerError::NotFound => StatusCode::NOT_FOUND,
-            ServerError::Gone => StatusCode::GONE,
-            ServerError::Unauthorized => StatusCode::UNAUTHORIZED,
-            ServerError::Capacity => StatusCode::TOO_MANY_REQUESTS,
-            ServerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        };
-        (
-            status,
-            Json(json!({"error": self.0.current_context().to_string()})),
-        )
-            .into_response()
-    }
-}
-
-fn org(service: &Sampling, headers: &HeaderMap) -> Result<OrgId, ApiError> {
-    let key = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    Ok(service.authenticate(key)?)
-}
-
-pub(crate) async fn config(
-    State(service): State<Sampling>, headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    org(&service, &headers)?;
-    Ok(Json(json!({"use_pyqwest_transport": false})))
+/// With `parallel_fwdbwd_chunks` the SDK sends a split call's first chunk
+/// last, so 64 later chunks waiting for it would leave it rejected by the
+/// pending limit forever.
+pub(crate) async fn config(_: Org) -> Json<Value> {
+    Json(json!({"use_pyqwest_transport": false, "parallel_fwdbwd_chunks": false}))
 }
 
 pub(crate) async fn create_session(
-    State(service): State<Sampling>, headers: HeaderMap,
+    Org(org): Org, State(service): State<Sampling>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = service.create_session(org(&service, &headers)?)?;
+    let id = service.create_session(org)?;
     Ok(Json(json!({"session_id": id, "type": "create_session"})))
 }
 
@@ -83,9 +31,9 @@ pub(crate) struct Heartbeat {
 }
 
 pub(crate) async fn heartbeat(
-    State(service): State<Sampling>, headers: HeaderMap, ApiJson(request): ApiJson<Heartbeat>,
+    Org(org): Org, State(service): State<Sampling>, ApiJson(request): ApiJson<Heartbeat>,
 ) -> Result<Json<Value>, ApiError> {
-    service.heartbeat(&org(&service, &headers)?, request.session_id)?;
+    service.heartbeat(&org, request.session_id)?;
     Ok(Json(json!({})))
 }
 
@@ -98,9 +46,8 @@ pub(crate) struct CreateSampler {
 }
 
 pub(crate) async fn create_sampler(
-    State(service): State<Sampling>, headers: HeaderMap, ApiJson(request): ApiJson<CreateSampler>,
+    Org(org): Org, State(service): State<Sampling>, ApiJson(request): ApiJson<CreateSampler>,
 ) -> Result<Json<Value>, ApiError> {
-    let org = org(&service, &headers)?;
     if request.model_path.is_some() {
         return Err(Report::new(ServerError::Invalid(
             "checkpoint sampling is not implemented",
@@ -110,35 +57,30 @@ pub(crate) async fn create_sampler(
     let base = request
         .base_model
         .ok_or_else(|| Report::new(ServerError::Invalid("base_model is required")))?;
-    let id = service
-        .create_sampler(
-            &org,
-            request.session_id,
-            request.sampling_session_seq_id,
-            base,
-        )
-        .await?;
+    let id = service.create_sampler(
+        &org,
+        request.session_id,
+        request.sampling_session_seq_id,
+        &base,
+    )?;
     Ok(Json(
         json!({"sampling_session_id": id, "type": "create_sampling_session"}),
     ))
 }
 
-pub(crate) async fn capabilities(
-    State(service): State<Sampling>, headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    org(&service, &headers)?;
+pub(crate) async fn capabilities(_: Org, State(service): State<Sampling>) -> Json<Value> {
     let models: Vec<_> = service
         .bases()
-        .await?
         .into_iter()
         .map(|base| {
             json!({
                 "model_name": base.name, "max_context_length": base.max_context_length,
-                "trainable": false, "sampleable": true,
+                "trainable": base.roles.contains(&Role::Trainer),
+                "sampleable": base.roles.contains(&Role::Sampler),
             })
         })
         .collect();
-    Ok(Json(json!({"supported_models": models})))
+    Json(json!({"supported_models": models}))
 }
 
 #[derive(Deserialize)]
@@ -185,9 +127,8 @@ struct Params {
 }
 
 pub(crate) async fn sample(
-    State(service): State<Sampling>, headers: HeaderMap, ApiJson(request): ApiJson<Sample>,
+    Org(org): Org, State(service): State<Sampling>, ApiJson(request): ApiJson<Sample>,
 ) -> Result<Json<Value>, ApiError> {
-    let org = org(&service, &headers)?;
     let prompt: Vec<_> = request
         .prompt
         .chunks
@@ -243,6 +184,7 @@ pub(crate) async fn sample(
             num_samples: request.num_samples,
             max_length,
             seed: request.sampling_params.seed.unwrap_or(0),
+            worker_id: String::new(),
         },
     )?;
     let sequence_ids: Vec<_> = (0..request.num_samples)
@@ -253,25 +195,13 @@ pub(crate) async fn sample(
     ))
 }
 
-#[derive(Deserialize)]
-pub(crate) struct Retrieve {
-    request_id: RequestId,
-}
-
-pub(crate) async fn retrieve(
-    State(service): State<Sampling>, headers: HeaderMap, ApiJson(request): ApiJson<Retrieve>,
-) -> Result<Response, ApiError> {
+/// The answer for a sample, or `None` while it is pending.
+pub(crate) fn response(result: SampleResult) -> Option<Response> {
     use prost::Message;
-    match service.retrieve(&org(&service, &headers)?, request.request_id)? {
-        SampleResult::Pending => {
-            Ok((
-                StatusCode::REQUEST_TIMEOUT,
-                Json(json!({"type": "try_again", "queue_state": "active"})),
-            )
-                .into_response())
-        }
+    match result {
+        SampleResult::Pending => None,
         SampleResult::Failed => {
-            Ok(
+            Some(
                 Json(json!({"error": "worker sampling failed", "category": "server"}))
                     .into_response(),
             )
@@ -295,11 +225,13 @@ pub(crate) async fn retrieve(
                     .collect(),
                 ..Default::default()
             };
-            Ok((
-                [("content-type", "application/x-protobuf")],
-                result.encode_to_vec(),
+            Some(
+                (
+                    [("content-type", "application/x-protobuf")],
+                    result.encode_to_vec(),
+                )
+                    .into_response(),
             )
-                .into_response())
         }
     }
 }

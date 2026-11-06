@@ -2,10 +2,88 @@ syntax = "proto3";
 
 package metrl.worker;
 
-// Served by every worker; servers dial it.
+// Served by every worker; servers dial it. Requests that name a `worker_id`
+// fail with FAILED_PRECONDITION when another worker answers at the address.
 service WorkerService {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Sample(SampleRequest) returns (SampleResponse);
+  // Makes `generation` the model's owner on this worker, creating the trainer
+  // state on first bind. ABORTED for an older generation than the bound one.
+  rpc Bind(BindRequest) returns (BindResponse);
+  // Runs one task of a bound model. ABORTED when a newer generation has bound
+  // or a later seq has run; FAILED_PRECONDITION when `generation` has not
+  // bound. Repeating the last seq returns its response without running it
+  // again. Task failures are responses, not errors.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+message BindRequest {
+  string worker_id = 1;
+  string model_id = 2;
+  uint64 generation = 3;
+  string base = 4;
+  uint32 lora_rank = 5;
+  uint64 seed = 6;
+  string revision = 7;
+}
+
+message BindResponse {}
+
+message ExecuteRequest {
+  string worker_id = 1;
+  string model_id = 2;
+  uint64 generation = 3;
+  uint64 seq = 4;
+  oneof task {
+    ForwardBackward forward_backward = 5;
+    AdamParams optim_step = 6;
+  }
+}
+
+// Reads a Tinker `ForwardBackwardRequest` from `input_key` and writes a Tinker
+// `ForwardBackwardOutput` to `output_key`, which is unique to the request and
+// generation.
+message ForwardBackward {
+  string input_key = 1;
+  string output_key = 2;
+}
+
+message AdamParams {
+  double learning_rate = 1;
+  double beta1 = 2;
+  double beta2 = 3;
+  double eps = 4;
+  double weight_decay = 5;
+  double grad_clip_norm = 6;
+}
+
+message ExecuteResponse {
+  oneof outcome {
+    ForwardBackwardDone forward_backward = 1;
+    OptimStepDone optim_step = 2;
+    TaskFailed failed = 3;
+  }
+}
+
+message ForwardBackwardDone {
+  // The `output_key` of the call that ran the task. A repeated call after a
+  // takeover returns the earlier generation's key.
+  string output_key = 1;
+}
+
+message OptimStepDone {
+  map<string, double> metrics = 1;
+}
+
+message TaskFailed {
+  ErrorCategory category = 1;
+  string message = 2;
+}
+
+enum ErrorCategory {
+  ERROR_CATEGORY_UNSPECIFIED = 0;
+  ERROR_CATEGORY_USER = 1;
+  ERROR_CATEGORY_SERVER = 2;
 }
 
 message SampleRequest {
@@ -14,6 +92,7 @@ message SampleRequest {
   uint32 num_samples = 3;
   uint32 max_length = 4;
   uint64 seed = 5;
+  string worker_id = 6;
 }
 
 message SampleResponse {

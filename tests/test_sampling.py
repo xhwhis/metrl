@@ -1,82 +1,18 @@
 import asyncio
-import os
-import socket
-import subprocess
-import sys
 import time
-from collections.abc import Iterator
-from contextlib import ExitStack
-from dataclasses import dataclass
-from pathlib import Path
 
 import httpx
 import pytest
 import tinker
+from conftest import Cluster
 
 
-@dataclass(frozen=True, slots=True)
-class Runtime:
-    url: str
-    worker: subprocess.Popen[bytes]
+def test_sampling_sdk_and_isolation(cluster: Cluster) -> None:
+    alpha_key, beta_key = cluster.key("alpha"), cluster.key("beta")
 
-
-@pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[Runtime]:
-    with ExitStack() as stack:
-        sockets = [stack.enter_context(socket.socket()) for _ in range(3)]
-        for connection in sockets:
-            connection.bind(("127.0.0.1", 0))
-        ports = [connection.getsockname()[1] for connection in sockets]
-    url = f"http://127.0.0.1:{ports[0]}"
-    env = os.environ | {
-        "METRL_HTTP_ADDR": f"127.0.0.1:{ports[0]}",
-        "METRL_SYSTEM_ADDR": f"127.0.0.1:{ports[1]}",
-        "METRL_WORKER_ENDPOINT": f"http://127.0.0.1:{ports[2]}",
-        "METRL_AUTH_KEYS": "alpha:tml-alpha,beta:tml-beta",
-    }
-    with (
-        (tmp_path / "worker.log").open("wb") as worker_log,
-        (tmp_path / "server.log").open("wb") as server_log,
-        subprocess.Popen(
-            [
-                str(Path(sys.executable).with_name("metrl-worker")),
-                "--addr",
-                f"127.0.0.1:{ports[2]}",
-            ],
-            stdout=worker_log,
-            stderr=subprocess.STDOUT,
-        ) as worker,
-        subprocess.Popen(
-            ["target/debug/metrl-server"], env=env, stdout=server_log, stderr=subprocess.STDOUT
-        ) as server,
-    ):
-        try:
-            with httpx.Client(
-                base_url=url, timeout=1, headers={"x-api-key": "tml-alpha"}
-            ) as client:
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    assert server.poll() is None, (tmp_path / "server.log").read_text()
-                    assert worker.poll() is None, (tmp_path / "worker.log").read_text()
-                    try:
-                        if client.get("/api/v1/get_server_capabilities").status_code == 200:
-                            break
-                    except httpx.TransportError:
-                        pass
-                    time.sleep(0.05)
-                else:
-                    pytest.fail("server and worker did not become ready")
-            yield Runtime(url=url, worker=worker)
-        finally:
-            server.terminate()
-            if worker.poll() is None:
-                worker.terminate()
-
-
-def test_sampling_sdk_and_isolation(runtime: Runtime) -> None:
     async def run() -> None:
-        alpha = tinker.ServiceClient(base_url=runtime.url, api_key="tml-alpha")
-        beta = tinker.ServiceClient(base_url=runtime.url, api_key="tml-beta")
+        alpha = tinker.ServiceClient(base_url=cluster.url, api_key=alpha_key)
+        beta = tinker.ServiceClient(base_url=cluster.url, api_key=beta_key)
         a = await alpha.create_sampling_client_async(base_model="mock")
         b = await beta.create_sampling_client_async(base_model="mock")
         params = tinker.SamplingParams(max_tokens=4, seed=3)
@@ -96,9 +32,9 @@ def test_sampling_sdk_and_isolation(runtime: Runtime) -> None:
         assert len({s.sequence_id for s in (*first.sequences, *repeated.sequences)}) == 4
 
     asyncio.run(run())
-    with httpx.Client(base_url=runtime.url) as client:
-        alpha = {"x-api-key": "tml-alpha"}
-        beta = {"x-api-key": "tml-beta"}
+    with httpx.Client(base_url=cluster.url) as client:
+        alpha = {"x-api-key": alpha_key}
+        beta = {"x-api-key": beta_key}
         assert client.post("/api/v1/create_session").status_code == 401
         session = client.post("/api/v1/create_session", headers=alpha).json()["session_id"]
         body = {"session_id": session, "sampling_session_seq_id": 0, "base_model": "mock"}
@@ -118,8 +54,8 @@ def test_sampling_sdk_and_isolation(runtime: Runtime) -> None:
             ).status_code
             == 400
         )
-        runtime.worker.terminate()
-        runtime.worker.wait(timeout=5)
+        cluster.worker.terminate()
+        cluster.worker.wait(timeout=5)
         assert (
             client.post("/api/v1/create_sampling_session", headers=alpha, json=body).json() == model
         )

@@ -9,7 +9,7 @@ Read ARCHITECTURE.md for the design and docs/decisions/ for why.
 - `crates/common/{config,error,proto,telemetry,types,utils}`: crates shared across the project.
   `utils` holds project-internal functions that don't fit business logic.
 - `crates/scheduler`: pure decisions only (`model/`, `cluster/`). No I/O, no clock reads.
-- `crates/meta`: Postgres access, migrations, and CDC.
+- `crates/meta`: Postgres access, schema, and CDC. All server SQL lives in `crates/meta/sql/`.
 - `crates/object`: object store keys, checkpoints, and sweep.
 - `crates/api`: Tinker HTTP API.
 - `crates/server`: wires api, scheduler, meta, and object; runs model actors and peers.
@@ -26,7 +26,8 @@ Read ARCHITECTURE.md for the design and docs/decisions/ for why.
 Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `just`, `prek`,
 `taplo`, `typos`, `cargo-shear`, `cargo-nextest`, Docker; `samply` for profiling.
 
-`just setup | up | db-reset | dev | fmt | lint | test | check | tinker-proto | profile`
+`just setup | up | db-reset | dev | worker | key | fmt | lint | test | check | tinker-proto |
+profile`
 
 `just check` runs everything CI runs except the stable-toolchain build.
 
@@ -36,16 +37,22 @@ Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `jus
   shims; ship the best implementation. The only external contract is the Tinker SDK
   HTTP API. Track the latest `tinker` release; on upgrade, run `just tinker-proto` and
   diff the SDK's `types/` and routes against the API.
-- Edit `crates/meta/migrations/0001_init.sql` in place. Reset or backfill data instead
-  of writing new migrations.
+- SQL lives only in `.sql` files, one statement per file: server SQL in
+  `crates/meta/sql/`, loaded with `include_str!`; test SQL in `tests/sql/`, run with
+  `psql()` from `tests/conftest.py`. No SQL strings in Rust, Python, or scripts. Tests
+  use `metrl-server` commands or the API first and SQL only for what those cannot
+  reach, such as per-test databases, writes that bypass Metrl, or replication slots.
+  The schema is the one exception: all of it is in `crates/meta/sql/schema.sql`,
+  edited in place; reset or backfill data instead of writing migrations.
 - Dependency boundaries: only `server` depends on `scheduler`; only `server` and `bin`
   depend on `meta`; `worker` and `metrl-py` never reach `scheduler`, `meta`, or `server`.
 - Dependency versions live only in `[workspace.dependencies]` in the root `Cargo.toml`.
   Members write `{ workspace = true }` and may add `features` or `optional`; `taplo check`
   enforces this. Before adding a dependency, check crates.io or PyPI for the latest
   version and recent maintenance. Use caret ranges and commit lockfiles.
-- Multi-tenancy: every row carries `org_id`, every query filters by it, cross-org access
-  returns 404, and object keys start with `orgs/{org_id}/`.
+- Multi-tenancy: every tenant row carries `org_id`, every tenant query filters by it,
+  cross-org access returns 404, and object keys start with `orgs/{org_id}/`. Shared
+  cluster rows (`workers`) have no `org_id`.
 - Lint and type-check levels live only in the root config: `[workspace.lints]` in
   `Cargo.toml` and `clippy.toml`, and `[tool.ruff]` / `[tool.ty]` in `pyproject.toml`.
   Do not add suppressions to source code: no `#[allow]`, `#[expect]`, `#[warn]`,
@@ -69,6 +76,9 @@ Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `jus
 - No `impl Into<T>` parameters; callers convert.
 - Call free functions through their module (`mem::take`, not `take`). Import traits
   inside the function that uses them unless the whole file does.
+- A generated proto type that shares a name with a domain type is always written
+  through its package module (`worker::Base`), never imported by name or renamed with
+  `as`, so a bare `Base` always means the domain type.
 - Keep the functional style: iterator chains, `match`, and expressions over mutable
   loops where they read clearly.
 - `Arc` and `.clone()` are fine where ownership is really shared; never clone or wrap
@@ -78,8 +88,9 @@ Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `jus
   The model actor executes effects; all I/O lives there.
 - Errors use `error-stack`. Each crate has one error context and returns
   `Result<T, Report<Context>>`. Crossing a crate boundary calls `change_context` and
-  attaches business context such as `model_id` and `seq`. Only `api` and the worker RPC
-  map error kinds to protocol statuses. No `anyhow`, no `#[from]`, no `unwrap`.
+  attaches business context such as `model_id` and `seq`. Only protocol boundaries
+  map error kinds to statuses, each service in one place: `api` for HTTP, and each gRPC
+  service implementation. No `anyhow`, no `#[from]`, no `unwrap`.
   `expect` is fine for invariants that only a caller bug can break; state the invariant.
 - Code explains what; comments explain why. No comments that restate code.
 - Every `tokio::spawn` carries `.instrument(span)`.

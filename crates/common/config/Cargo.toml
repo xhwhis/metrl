@@ -10,5 +10,6 @@ workspace = true
 [dependencies]
 config = { workspace = true }
 error-stack = { workspace = true }
+metrl-types = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

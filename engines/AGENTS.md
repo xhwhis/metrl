@@ -1,7 +1,7 @@
 # engines
 
 One package per engine: dist `metrl-engine-<name>`, module `metrl.engines.<name>`,
-selected by `METRL_ENGINE`.
+selected by `[engine] name` in `worker.toml`.
 
 - `metrl/` and `metrl/engines/` are PEP 420 namespaces. Never add `__init__.py` there.
 - Implement the `Trainer` and `Sampler` Protocols from `metrl.worker`. Methods are

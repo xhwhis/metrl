@@ -12,3 +12,8 @@ reason = "Python extension module metrl._core"
 crate = "metrl_api"
 module = "tinker_public"
 reason = "generated from proto/tinker.proto"
+
+[[exclude]]
+crate = "metrl_worker"
+module = "tinker_public"
+reason = "generated from proto/tinker.proto"

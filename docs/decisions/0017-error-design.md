@@ -18,8 +18,9 @@ with `?` serves neither.
   `Result<T, Report<Context>>`.
 - Crossing a crate boundary requires `change_context` and attaches business context such
   as `model_id` and `seq`.
-- Only `api` and the worker RPC map kinds to protocol statuses. The full report is logged
-  inside the request span.
+- Only protocol boundaries map kinds to statuses, each service in one place: `api` for
+  HTTP, and each gRPC service implementation. The full report is logged inside the
+  request span.
 - No `anyhow`, no `#[from]`. `thiserror` only derives `Display`.
 
 ## Alternatives

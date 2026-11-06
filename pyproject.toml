@@ -12,18 +12,18 @@ metrl-worker = "metrl.worker.main:main"
 [dependency-groups]
 dev = [
   "httpx>=0.28",
-  "maturin>=1.15",
+  "maturin>=1.16",
   "metrl-engine-mlx",
   "metrl-engine-mock",
-  "pytest>=9.1",
+  "pytest>=9.2",
   "ruff>=0.17",
-  "tinker>=0.35",
+  "tinker>=0.37",
   "types-protobuf>=7.35",
-  "ty>=0.0.90",
+  "ty>=0.0.97",
 ]
 
 [build-system]
-requires = ["maturin>=1.15,<2"]
+requires = ["maturin>=1.16"]
 build-backend = "maturin"
 
 [tool.maturin]

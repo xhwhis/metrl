@@ -6,3 +6,12 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+error-stack = { workspace = true }
+metrl-config = { workspace = true }
+metrl-types = { workspace = true }
+object_store = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
