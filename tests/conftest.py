@@ -205,6 +205,9 @@ def cluster(
     psql("clone_database", ADMIN_DATABASE, name=name, template=template)
     with ExitStack() as stack:
         stack.callback(psql, "drop_database", ADMIN_DATABASE, name=name)
+        # A stopped server's walsender exits on its own time, and its active slot
+        # makes the drop fail even with FORCE; runs after the server stops.
+        stack.callback(psql, "terminate_walsender", name)
         # Created before the server starts, so only its startup scan can load it.
         probe = create_key(env, "probe")
         server = spawn(stack, [SERVER], env, stack.enter_context(server_log.open("wb")))
