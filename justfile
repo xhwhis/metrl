@@ -62,6 +62,12 @@ test: up
     uv run --no-sync maturin develop --uv --generate-stubs
     uv run --no-sync pytest -q
 
+# E2E on the MLX engine with a tiny Qwen3; macOS only, outside `check`
+test-mlx: up
+    cargo build -p metrl-bin --bin metrl-server --features failpoints
+    uv run --no-sync maturin develop --uv --generate-stubs
+    uv run --no-sync pytest -q tests/test_mlx.py
+
 # Everything CI checks except the stable toolchain
 check: lint test
 

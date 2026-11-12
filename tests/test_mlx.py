@@ -1,17 +1,13 @@
 """The flows of `test_training` and `test_sampling` on the MLX engine with a
-tiny Qwen3. Runs only on macOS: MLX installs on Linux but its wheel there
-lacks a backend, so the worker could not load it."""
+tiny Qwen3. Left out of the default run; `just test-mlx` runs it on macOS."""
 
 import asyncio
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import tinker
 from conftest import Cluster
-
-pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="MLX runs only on macOS")
 
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 # Clients see the alias; the worker loads `TINY` from its `path`.

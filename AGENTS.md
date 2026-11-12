@@ -24,12 +24,13 @@ Read ARCHITECTURE.md for the design and docs/decisions/ for why.
 ## Commands
 
 Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `just`, `prek`,
-`taplo`, `typos`, `cargo-shear`, `cargo-nextest`, Docker; `samply` for profiling.
+`taplo`, `typos`, `cargo-shear`, `cargo-nextest`, Docker, `psql`; `samply` for profiling.
 
-`just setup | up | db-reset | dev | worker | key | rl | fmt | lint | test | check |
-tinker-proto | profile`
+`just setup | up | db-reset | dev | worker | key | rl | fmt | lint | test | test-mlx |
+check | tinker-proto | profile`
 
-`just check` runs everything CI runs except the stable-toolchain build.
+`just check` runs everything CI runs except the stable-toolchain build and the macOS job,
+which `just test-mlx` runs.
 
 ## Rules
 

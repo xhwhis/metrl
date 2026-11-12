@@ -4,7 +4,8 @@ End-to-end and chaos tests drive real `metrl-server` and `metrl-worker` processe
 through the Tinker SDK.
 
 - Default engine is `mock`. `test_mlx.py` runs the RL loop and sampling flows on the
-  MLX engine with a tiny Qwen3; it runs only on macOS and is skipped in CI.
+  MLX engine with a tiny Qwen3. The default run leaves it out; `just test-mlx` runs it
+  on macOS, and CI runs it on a macOS runner.
 - Each test gets its own Postgres database cloned from a template, and its own
   object store prefix.
 - Chaos uses `fail` points in Rust (`failpoints` feature) and `METRL_MOCK_FAULT` in the

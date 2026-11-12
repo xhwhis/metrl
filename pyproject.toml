@@ -80,3 +80,5 @@ python-version = "3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Runs on macOS only, through `just test-mlx`; naming the file still runs it.
+addopts = ["--ignore=tests/test_mlx.py"]

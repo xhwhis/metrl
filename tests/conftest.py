@@ -23,13 +23,17 @@ ADMIN_DATABASE = "postgres"
 
 
 def psql_command(database: str, **variables: str) -> list[str]:
-    command = ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "metrl", "-d", database]
     options = ["-X", "-q", "-At", "-v", "ON_ERROR_STOP=1"]
-    return [*command, *options, *(f"--set={name}={value}" for name, value in variables.items())]
+    return [
+        "psql",
+        database_url(database),
+        *options,
+        *(f"--set={name}={value}" for name, value in variables.items()),
+    ]
 
 
 def psql(script: str, database: str, **variables: str) -> str:
-    """Runs `tests/sql/<script>.sql` in the compose Postgres and returns its output."""
+    """Runs `tests/sql/<script>.sql` in the test Postgres and returns its output."""
     return subprocess.run(
         psql_command(database, **variables),
         input=(SQL / f"{script}.sql").read_text(),
@@ -172,7 +176,7 @@ def cluster(
 ) -> Iterator[Cluster]:
     name = f"metrl_test_{uuid.uuid4().hex[:12]}"
     http, grpc, system, worker_grpc = free_ports(4)
-    # The compose object store, under a prefix of the test's own.
+    # The local object store, under a prefix of the test's own.
     objects = {
         "METRL_OBJECT__URL": f"s3://metrl/tests/{name}",
         "METRL_OBJECT__SECRET_ACCESS_KEY": "metrl-dev-secret",
