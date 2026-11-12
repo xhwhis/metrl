@@ -7,10 +7,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Fail points for chaos tests, configured through `FAIL_POINTS`.
+failpoints = ["fail/failpoints"]
+
 [dependencies]
 bytes = { workspace = true }
 deadpool-postgres = { workspace = true }
 error-stack = { workspace = true }
+fail = { workspace = true }
 metrl-types = { workspace = true }
 pgwire-replication = { workspace = true }
 thiserror = { workspace = true }

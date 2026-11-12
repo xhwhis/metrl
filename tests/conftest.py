@@ -155,7 +155,21 @@ def mock_fault() -> str:
 
 
 @pytest.fixture
-def cluster(template: str, tmp_path: Path, mock_fault: str) -> Iterator[Cluster]:
+def worker_config() -> Path:
+    """The worker's config file; a module overrides it to run another engine."""
+    return Path("config/worker.toml")
+
+
+@pytest.fixture
+def startup() -> float:
+    """Seconds the worker may take to load its engine and register."""
+    return 10
+
+
+@pytest.fixture
+def cluster(
+    template: str, tmp_path: Path, mock_fault: str, worker_config: Path, startup: float
+) -> Iterator[Cluster]:
     name = f"metrl_test_{uuid.uuid4().hex[:12]}"
     http, grpc, system, worker_grpc = free_ports(4)
     # The compose object store, under a prefix of the test's own.
@@ -177,6 +191,7 @@ def cluster(template: str, tmp_path: Path, mock_fault: str) -> Iterator[Cluster]
         os.environ
         | objects
         | {
+            "METRL_CONFIG": str(worker_config),
             "METRL_GRPC_ADDR": f"127.0.0.1:{worker_grpc}",
             "METRL_SERVERS": f"http://127.0.0.1:{grpc}",
             "METRL_MOCK_FAULT": mock_fault,
@@ -203,5 +218,5 @@ def cluster(template: str, tmp_path: Path, mock_fault: str) -> Iterator[Cluster]
                 return False
             return response.status_code == 200 and bool(response.json()["supported_models"])
 
-        wait_for(registered, "the worker never appeared in get_server_capabilities")
+        wait_for(registered, "the worker never appeared in get_server_capabilities", startup)
         yield cluster

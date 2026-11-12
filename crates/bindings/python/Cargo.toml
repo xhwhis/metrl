@@ -24,7 +24,8 @@ pyo3 = { workspace = true, features = [
   "experimental-inspect",
 ] }
 pyo3-async-runtimes = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 uuid = { workspace = true }

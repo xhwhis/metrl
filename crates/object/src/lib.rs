@@ -5,5 +5,5 @@ mod keys;
 mod store;
 
 pub use error::ObjectError;
-pub use keys::{task_input, task_output};
+pub use keys::{sampler_weights, task_input, task_output};
 pub use store::{Store, open};

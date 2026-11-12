@@ -3,15 +3,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use error_stack::Report;
-use metrl_meta::View;
+use metrl_meta::{Checkpoint, Store, View};
 use metrl_proto::worker::{SampleRequest, SampleResponse};
-use metrl_types::{Base, KeyHash, ModelId, OrgId, RequestId, Role, SessionId};
+use metrl_types::{Base, ErrorCategory, KeyHash, ModelId, OrgId, RequestId, Role, SessionId};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 use uuid::Uuid;
 
-use crate::{ServerError, Workers};
+use crate::error::DATABASE;
+use crate::registry::Live;
+use crate::{ServerError, Workers, sampler_path};
 
 /// Samples one org may hold, so one org cannot take every slot.
 const MAX_SAMPLES_PER_ORG: usize = 1024;
@@ -43,7 +45,10 @@ const READ_SAMPLE_TTL: Duration = Duration::from_secs(60);
 pub enum SampleResult {
     Pending,
     Complete(SampleResponse),
-    Failed,
+    Failed {
+        category: ErrorCategory,
+        message: String,
+    },
 }
 
 struct Session {
@@ -56,6 +61,23 @@ struct SamplingSession {
     seq: u64,
     base: String,
     revision: String,
+    /// The saved adapter it samples, or `None` for the bare base.
+    checkpoint: Option<Checkpoint>,
+}
+
+/// What a sampling session samples.
+struct Target {
+    base: String,
+    revision: String,
+    /// The saved adapter it applies, or `None` for the bare base.
+    checkpoint: Option<Checkpoint>,
+}
+
+/// Tinker's record of a sampler, as `GET /samplers/{id}` answers.
+pub struct SamplerRecord {
+    pub base: String,
+    /// The `tinker://` path of the named save it samples.
+    pub model_path: Option<String>,
 }
 
 struct Sample {
@@ -117,15 +139,17 @@ impl State {
 pub struct Sampling {
     view: View,
     workers: Workers,
+    store: Store,
     state: Arc<Mutex<State>>,
     finished: Arc<Notify>,
 }
 
 impl Sampling {
-    pub fn new(view: View, workers: Workers) -> Self {
+    pub fn new(view: View, workers: Workers, store: Store) -> Self {
         Self {
             view,
             workers,
+            store,
             state: Arc::new(Mutex::new(State::default())),
             finished: Arc::new(Notify::new()),
         }
@@ -199,9 +223,9 @@ impl Sampling {
             .iter()
             .find(|(_, s)| s.parent == session && s.seq == seq)
         {
-            if sampler.base != base {
+            if sampler.base != base || sampler.checkpoint.is_some() {
                 return Err(Report::new(ServerError::Invalid(
-                    "sampling session retry changed base model",
+                    "sampling session retry changed the model",
                 )));
             }
             return Ok(*id);
@@ -227,26 +251,164 @@ impl Sampling {
                 seq,
                 base: known.name,
                 revision: known.revision,
+                checkpoint: None,
             },
         );
         drop(state);
         Ok(id)
     }
 
-    pub fn sample(
+    /// The checkpoint a save wrote. The view may lag a save that another
+    /// server answered from Postgres, so a miss there asks Postgres.
+    async fn checkpoint(
+        &self, org: &OrgId, id: RequestId,
+    ) -> Result<Option<Checkpoint>, Report<ServerError>> {
+        use error_stack::ResultExt;
+        if let Some(checkpoint) = self.view.checkpoint(org, id) {
+            return Ok(Some(checkpoint));
+        }
+        self.store
+            .checkpoint(org, id)
+            .await
+            .change_context(DATABASE)
+            .attach(format!("checkpoint {}", id.0))
+    }
+
+    /// The model's checkpoint saved as `name`, from the view or, like
+    /// [`Self::checkpoint`], from Postgres.
+    async fn named_checkpoint(
+        &self, org: &OrgId, model: ModelId, name: &str,
+    ) -> Result<Option<Checkpoint>, Report<ServerError>> {
+        use error_stack::ResultExt;
+        if let Some(checkpoint) = self.view.named_checkpoint(org, model, name) {
+            return Ok(Some(checkpoint));
+        }
+        self.store
+            .named_checkpoint(org, model, name)
+            .await
+            .change_context(DATABASE)
+            .attach(format!("model {}, checkpoint {name}", model.0))
+    }
+
+    /// A sampling session on the checkpoint a named save answered with as
+    /// `path`.
+    pub async fn create_checkpoint_sampler(
+        &self, org: &OrgId, session: SessionId, seq: u64, path: &str,
+    ) -> Result<ModelId, Report<ServerError>> {
+        let path = sampler_path::parse(path).ok_or_else(|| {
+            Report::new(ServerError::Invalid(
+                "model_path must be tinker://<model_id>/sampler_weights/<name>",
+            ))
+        })?;
+        self.heartbeat(org, session)?;
+        let checkpoint = self.named_checkpoint(org, path.model, path.name).await?;
+        let mut state = self.state.lock();
+        if let Some((id, sampler)) = state
+            .samplers
+            .iter()
+            .find(|(_, s)| s.parent == session && s.seq == seq)
+        {
+            let unchanged = sampler
+                .checkpoint
+                .as_ref()
+                .is_some_and(|held| checkpoint.as_ref().is_some_and(|found| found.id == held.id));
+            if !unchanged {
+                return Err(Report::new(ServerError::Invalid(
+                    "sampling session retry changed the model",
+                )));
+            }
+            return Ok(*id);
+        }
+        let checkpoint = checkpoint.ok_or_else(|| Report::new(ServerError::NotFound))?;
+        let held = state
+            .samplers
+            .values()
+            .filter(|s| state.sessions.get(&s.parent).is_some_and(|s| &s.org == org))
+            .count();
+        if held >= MAX_SAMPLERS_PER_ORG || state.samplers.len() >= MAX_SAMPLERS {
+            return Err(Report::new(ServerError::Capacity));
+        }
+        let id = ModelId(Uuid::now_v7());
+        state.samplers.insert(
+            id,
+            SamplingSession {
+                parent: session,
+                seq,
+                base: checkpoint.base.clone(),
+                revision: checkpoint.base_revision.clone(),
+                checkpoint: Some(checkpoint),
+            },
+        );
+        drop(state);
+        Ok(id)
+    }
+
+    /// What the sampling session `model` samples.
+    async fn target(&self, org: &OrgId, model: ModelId) -> Result<Target, Report<ServerError>> {
+        let session = {
+            let mut state = self.state.lock();
+            state.expire();
+            state
+                .samplers
+                .get(&model)
+                .filter(|s| state.sessions.get(&s.parent).is_some_and(|s| &s.org == org))
+                .map(|s| {
+                    Target {
+                        base: s.base.clone(),
+                        revision: s.revision.clone(),
+                        checkpoint: s.checkpoint.clone(),
+                    }
+                })
+        };
+        if let Some(target) = session {
+            return Ok(target);
+        }
+        // An unnamed save answers with its checkpoint's id as the sampling
+        // session.
+        let checkpoint = self
+            .checkpoint(org, RequestId(model.0))
+            .await?
+            .ok_or_else(|| Report::new(ServerError::NotFound))?;
+        Ok(Target {
+            base: checkpoint.base.clone(),
+            revision: checkpoint.base_revision.clone(),
+            checkpoint: Some(checkpoint),
+        })
+    }
+
+    /// The SDK reads it to learn the base of a sampler it created from a path
+    /// or an unnamed save.
+    pub async fn sampler(
+        &self, org: &OrgId, model: ModelId,
+    ) -> Result<SamplerRecord, Report<ServerError>> {
+        let target = self.target(org, model).await?;
+        let model_path = target.checkpoint.and_then(|checkpoint| {
+            checkpoint
+                .name
+                .map(|name| sampler_path::format(checkpoint.model, &name))
+        });
+        Ok(SamplerRecord {
+            base: target.base,
+            model_path,
+        })
+    }
+
+    pub async fn sample(
         &self, org: &OrgId, model: ModelId, seq: u64, mut request: SampleRequest,
     ) -> Result<RequestId, Report<ServerError>> {
         use tracing::Instrument;
         let id = RequestId(Uuid::now_v7());
-        let mut state = self.state.lock();
-        state.expire();
-        let (base, revision) = state
-            .samplers
-            .get(&model)
-            .filter(|s| state.sessions.get(&s.parent).is_some_and(|s| &s.org == org))
-            .map(|sampler| (sampler.base.clone(), sampler.revision.clone()))
-            .ok_or_else(|| Report::new(ServerError::NotFound))?;
+        let Target {
+            base,
+            revision,
+            checkpoint,
+        } = self.target(org, model).await?;
         request.model_id = model.0.to_string();
+        request.base_model = base.clone();
+        request.adapter = checkpoint
+            .as_ref()
+            .map_or_default(|checkpoint| checkpoint.prefix.clone());
+        let mut state = self.state.lock();
         if let Some((id, sample)) = state
             .samples
             .iter()
@@ -275,32 +437,14 @@ impl Sampling {
             },
         );
         drop(state);
-        let worker = self
-            .workers
-            .pick(&base, &revision, Role::Sampler, id.0.as_u64_pair().1);
+        // Samples of one adapter go to the worker that has it loaded; those
+        // of a bare base stay with their session's worker.
+        let affinity = checkpoint.map_or(model.0, |checkpoint| checkpoint.id.0);
+        let worker = self.workers.pick(&base, &revision, Role::Sampler, affinity);
         let service = self.clone();
         tokio::spawn(
             async move {
-                let sampled = match worker {
-                    Ok(mut worker) => {
-                        // A different process may listen at the address by now;
-                        // it rejects a request addressed to another worker.
-                        request.worker_id = worker.id.0.to_string();
-                        worker
-                            .client
-                            .sample(request)
-                            .await
-                            .map_err(|status| status.to_string())
-                    }
-                    Err(report) => Err(format!("{report:?}")),
-                };
-                let result = match sampled {
-                    Ok(response) => SampleResult::Complete(response.into_inner()),
-                    Err(error) => {
-                        tracing::error!(%error, "sample failed");
-                        SampleResult::Failed
-                    }
-                };
+                let result = run(worker, request).await;
                 let mut state = service.state.lock();
                 if let Some(sample) = state.samples.get_mut(&id) {
                     sample.result = result;
@@ -345,6 +489,38 @@ impl Sampling {
     }
 }
 
+/// Runs the sample on `worker`. Only the engine's own rejections reach the
+/// user; other failures are logged here.
+async fn run(
+    worker: Result<Live, Report<ServerError>>, mut request: SampleRequest,
+) -> SampleResult {
+    let sampled = match worker {
+        Ok(mut worker) => {
+            // A different process may listen at the address by now; it
+            // rejects a request addressed to another worker.
+            request.worker_id = worker.id.0.to_string();
+            worker.client.sample(request).await
+        }
+        Err(report) => Err(tonic::Status::unavailable(format!("{report:?}"))),
+    };
+    match sampled {
+        Ok(response) => SampleResult::Complete(response.into_inner()),
+        Err(status) if status.code() == tonic::Code::InvalidArgument => {
+            SampleResult::Failed {
+                category: ErrorCategory::User,
+                message: status.message().to_owned(),
+            }
+        }
+        Err(status) => {
+            tracing::error!(%status, "sample failed");
+            SampleResult::Failed {
+                category: ErrorCategory::Server,
+                message: "worker sampling failed".to_owned(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,7 +528,10 @@ mod tests {
     #[tokio::test]
     async fn expired_sample_is_gone_to_owner_and_not_found_to_other_org() {
         let view = View::empty();
-        let service = Sampling::new(view.clone(), Workers::new(view));
+        // Never connects: the pool opens connections on first use.
+        let store = metrl_meta::connect("postgres://metrl@127.0.0.1/unused")
+            .expect("the database url is valid");
+        let service = Sampling::new(view.clone(), Workers::new(view), store);
         let id = RequestId(Uuid::now_v7());
         let model = ModelId(Uuid::now_v7());
         service.state.lock().samples.insert(

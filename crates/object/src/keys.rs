@@ -21,3 +21,15 @@ pub fn task_output(
         org.0, model.0, seq.0, request.0, generation.0
     )
 }
+
+/// The prefix of a `save_weights_for_sampler` call's adapter files. Each
+/// generation writes its own, so a fenced owner never overwrites the files its
+/// successor recorded.
+pub fn sampler_weights(
+    org: &OrgId, model: ModelId, request: RequestId, generation: Generation,
+) -> String {
+    format!(
+        "orgs/{}/models/{}/sampler_weights/{}/g{}/",
+        org.0, model.0, request.0, generation.0
+    )
+}

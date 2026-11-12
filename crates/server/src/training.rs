@@ -14,15 +14,14 @@ use metrl_types::{
 };
 use uuid::Uuid;
 
-use crate::{Sampling, ServerError, Workers};
+use crate::error::DATABASE;
+use crate::{Sampling, ServerError, Workers, sampler_path};
 
 /// A model takes no new task while this many wait, except the one it runs
 /// next: seq 1, or a seq whose predecessor has an outcome.
 /// `parallel_fwdbwd_chunks` is false, so the SDK sends chunks in seq order.
 /// Each exempt task is pending itself, so the next seq is not exempt.
 const MAX_PENDING: usize = 64;
-
-const DATABASE: ServerError = ServerError::Unavailable("database unavailable");
 
 /// An object store failure as the API reports it: one a retry may get past
 /// is 503; a missing or forbidden object is 500 and logged as an error,
@@ -55,6 +54,10 @@ pub enum TrainingResult {
     /// A Tinker `ForwardBackwardOutput`.
     ForwardBackward(Bytes),
     OptimStep(BTreeMap<String, f64>),
+    /// A named save's `tinker://` path.
+    SamplerPath(String),
+    /// An unnamed save's sampling session: its checkpoint's id.
+    SamplingSession(RequestId),
     Failed {
         category: ErrorCategory,
         message: String,
@@ -305,6 +308,16 @@ impl Training {
                 }
             }
             Some(Outcome::OptimStep { metrics }) => TrainingResult::OptimStep(metrics),
+            Some(Outcome::SaveWeightsForSampler { .. }) => {
+                if let TaskInput::SaveWeightsForSampler {
+                    name: Some(name), ..
+                } = &task.input
+                {
+                    TrainingResult::SamplerPath(sampler_path::format(task.model, name))
+                } else {
+                    TrainingResult::SamplingSession(task.request)
+                }
+            }
             Some(Outcome::Failed { category, message }) => {
                 TrainingResult::Failed { category, message }
             }

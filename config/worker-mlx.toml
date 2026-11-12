@@ -1,0 +1,16 @@
+grpc_addr = "127.0.0.1:7590"
+servers = ["http://127.0.0.1:7581"]
+
+[engine]
+name = "mlx"
+
+# The secret key comes from METRL_OBJECT__SECRET_ACCESS_KEY.
+[object]
+url = "s3://metrl"
+endpoint = "http://127.0.0.1:9000"
+access_key_id = "metrl"
+
+[[bases]]
+name = "Qwen/Qwen3-0.6B"
+path = "mlx-community/Qwen3-0.6B-bf16"
+roles = ["trainer", "sampler"]

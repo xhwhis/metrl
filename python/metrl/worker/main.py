@@ -9,11 +9,15 @@ from typing import cast
 
 import uvloop
 from metrl import _core
-from metrl.worker import Sampler, Trainer
+from metrl.worker import ComputeThread, Load
 
 
-async def run(config: _core.Config, sampler: Sampler, trainer: Trainer) -> None:
-    task = asyncio.create_task(_core.serve(str(uuid.uuid7()), config, sampler, trainer))
+async def run(config: _core.Config) -> None:
+    load = cast(Load, importlib.import_module(f"metrl.engines.{config.engine}").load)
+    engine = await load(config.engine_settings(), config.bases, ComputeThread())
+    task = asyncio.create_task(
+        _core.serve(str(uuid.uuid7()), config, engine.bases, engine.sampler, engine.trainer)
+    )
     loop = asyncio.get_running_loop()
     signals = (signal.SIGINT, signal.SIGTERM)
 
@@ -34,6 +38,4 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="metrl-worker", description="Metrl worker")
     parser.add_argument("--config", default=os.environ.get("METRL_CONFIG", "config/worker.toml"))
     args = parser.parse_args()
-    config = _core.Config.load(args.config)
-    engine = importlib.import_module(f"metrl.engines.{config.engine}")
-    uvloop.run(run(config, cast(Sampler, engine.Sampler()), cast(Trainer, engine.Trainer())))
+    uvloop.run(run(_core.Config.load(args.config)))

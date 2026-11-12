@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use metrl_meta::{Lease, Store, Task};
+use error_stack::Report;
+use metrl_meta::{Lease, MetaError, NewCheckpoint, Store, Task};
 use metrl_proto::worker::{self, BindRequest, ExecuteRequest, execute_request, execute_response};
 use metrl_types::{ErrorCategory, Outcome, Role, Seq, TaskInput, WorkerId};
 use tonic::{Code, Status};
@@ -77,6 +78,16 @@ pub(super) async fn execute(owner: Owner, task: Task, mut binding: Binding) -> F
                 grad_clip_norm: params.grad_clip_norm,
             })
         }
+        TaskInput::SaveWeightsForSampler { .. } => {
+            execute_request::Task::SaveWeightsForSampler(worker::SaveWeightsForSampler {
+                prefix: metrl_object::sampler_weights(
+                    &task.org,
+                    task.model,
+                    task.request,
+                    owner.lease.generation,
+                ),
+            })
+        }
     };
     let outcome = loop {
         match attempt(&owner, task.seq, &sent, &mut binding).await {
@@ -89,11 +100,7 @@ pub(super) async fn execute(owner: Owner, task: Task, mut binding: Binding) -> F
         tracing::info!(?category, message, "task failed");
     }
     loop {
-        match owner
-            .store
-            .complete_task(&owner.lease, task.seq, &outcome)
-            .await
-        {
+        match record(&owner, &task, &outcome).await {
             Ok(true) => {
                 return Finished::Executed {
                     seq: task.seq,
@@ -107,6 +114,42 @@ pub(super) async fn execute(owner: Owner, task: Task, mut binding: Binding) -> F
             }
         }
     }
+}
+
+/// Records the outcome of a task that ran. A save that wrote its files also
+/// records its checkpoint, in the same statement.
+async fn record(owner: &Owner, task: &Task, outcome: &Outcome) -> Result<bool, Report<MetaError>> {
+    let (
+        TaskInput::SaveWeightsForSampler {
+            name,
+            ttl_seconds,
+            user_metadata,
+            ..
+        },
+        Outcome::SaveWeightsForSampler { prefix, size_bytes },
+    ) = (&task.input, outcome)
+    else {
+        return owner
+            .store
+            .complete_task(&owner.lease, task.seq, outcome)
+            .await;
+    };
+    let checkpoint = NewCheckpoint {
+        id: task.request,
+        name: name.as_deref(),
+        prefix,
+        size_bytes: *size_bytes,
+        ttl_seconds: *ttl_seconds,
+        user_metadata,
+    };
+    let name_taken = Outcome::Failed {
+        category: ErrorCategory::User,
+        message: "a sampler checkpoint of this model already has this name".to_owned(),
+    };
+    owner
+        .store
+        .complete_save(&owner.lease, task.seq, outcome, &name_taken, &checkpoint)
+        .await
 }
 
 /// Records a task as failed without running it, retrying until the database
@@ -143,7 +186,7 @@ async fn attempt(
                 &lease.base,
                 &lease.base_revision,
                 Role::Trainer,
-                lease.model.0.as_u64_pair().1,
+                lease.model.0,
             ) {
                 Ok(live) => {
                     *binding = Binding {
@@ -251,6 +294,12 @@ fn outcome(response: worker::ExecuteResponse) -> Outcome {
         Some(execute_response::Outcome::OptimStep(done)) => {
             Outcome::OptimStep {
                 metrics: done.metrics.into_iter().collect(),
+            }
+        }
+        Some(execute_response::Outcome::SaveWeightsForSampler(done)) => {
+            Outcome::SaveWeightsForSampler {
+                prefix: done.prefix,
+                size_bytes: done.size_bytes,
             }
         }
         Some(execute_response::Outcome::Failed(failed)) => {

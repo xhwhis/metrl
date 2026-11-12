@@ -17,9 +17,9 @@ dev = [
   "metrl-engine-mock",
   "pytest>=9.2",
   "ruff>=0.17",
-  "tinker>=0.37",
+  "tinker>=0.39",
   "types-protobuf>=7.35",
-  "ty>=0.0.97",
+  "ty>=0.0.100",
 ]
 
 [build-system]

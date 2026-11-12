@@ -31,6 +31,21 @@ pub struct Task {
     pub created_at: SystemTime,
 }
 
+/// Saved adapter weights a sampler can load.
+#[derive(Clone, Debug)]
+pub struct Checkpoint {
+    /// The request of the save that wrote it.
+    pub id: RequestId,
+    org: OrgId,
+    pub model: ModelId,
+    /// `None` for an unnamed save.
+    pub name: Option<String>,
+    /// Object prefix of the adapter's files, ending in `/`.
+    pub prefix: String,
+    pub base: String,
+    pub base_revision: String,
+}
+
 /// How far behind the database the view may be before readers must stop
 /// trusting it.
 const STALE_AFTER: Duration = Duration::from_secs(30);
@@ -39,6 +54,13 @@ const STALE_AFTER: Duration = Duration::from_secs(30);
 struct TaskKey {
     model: ModelId,
     seq: Seq,
+}
+
+/// A named checkpoint as a `tinker://` path names it.
+#[derive(Eq, Hash, PartialEq)]
+struct CheckpointName {
+    model: ModelId,
+    name: String,
 }
 
 /// The replicated control state, as of the last applied transaction.
@@ -51,6 +73,8 @@ pub(crate) struct State {
     /// How many of each model's tasks have no outcome, so admission does not
     /// scan the whole log.
     pending: HashMap<ModelId, usize>,
+    checkpoints: HashMap<RequestId, Checkpoint>,
+    checkpoint_names: HashMap<CheckpointName, RequestId>,
     /// Every commit made before this instant has been applied; set by scans
     /// and heartbeats.
     pub(crate) fresh_at: Option<Instant>,
@@ -64,9 +88,12 @@ pub(crate) enum Change {
     DeleteWorker { id: WorkerId },
     PutTask(Task),
     DeleteTask { model: ModelId, seq: Seq },
+    PutCheckpoint(Checkpoint),
+    DeleteCheckpoint { id: RequestId },
     ClearKeys,
     ClearWorkers,
     ClearTasks,
+    ClearCheckpoints,
 }
 
 impl State {
@@ -114,6 +141,19 @@ impl State {
                     }
                 }
             }
+            Change::PutCheckpoint(checkpoint) => {
+                // A replaced row may have held another name.
+                self.remove_checkpoint(checkpoint.id);
+                if let Some(name) = &checkpoint.name {
+                    let key = CheckpointName {
+                        model: checkpoint.model,
+                        name: name.clone(),
+                    };
+                    self.checkpoint_names.insert(key, checkpoint.id);
+                }
+                self.checkpoints.insert(checkpoint.id, checkpoint);
+            }
+            Change::DeleteCheckpoint { id } => self.remove_checkpoint(id),
             Change::ClearKeys => self.keys.clear(),
             Change::ClearWorkers => self.workers.clear(),
             Change::ClearTasks => {
@@ -121,6 +161,22 @@ impl State {
                 self.requests.clear();
                 self.pending.clear();
             }
+            Change::ClearCheckpoints => {
+                self.checkpoints.clear();
+                self.checkpoint_names.clear();
+            }
+        }
+    }
+
+    fn remove_checkpoint(&mut self, id: RequestId) {
+        if let Some(Checkpoint {
+            model,
+            name: Some(name),
+            ..
+        }) = self.checkpoints.remove(&id)
+        {
+            self.checkpoint_names
+                .remove(&CheckpointName { model, name });
         }
     }
 }
@@ -193,6 +249,28 @@ impl View {
     /// How many of the model's tasks have no outcome yet.
     pub fn pending_tasks(&self, model: ModelId) -> usize {
         self.0.borrow().pending.get(&model).copied().unwrap_or(0)
+    }
+
+    pub fn checkpoint(&self, org: &OrgId, id: RequestId) -> Option<Checkpoint> {
+        self.0
+            .borrow()
+            .checkpoints
+            .get(&id)
+            .filter(|checkpoint| checkpoint.org == *org)
+            .cloned()
+    }
+
+    pub fn named_checkpoint(&self, org: &OrgId, model: ModelId, name: &str) -> Option<Checkpoint> {
+        let state = self.0.borrow();
+        let key = CheckpointName {
+            model,
+            name: name.to_owned(),
+        };
+        state
+            .checkpoints
+            .get(state.checkpoint_names.get(&key)?)
+            .filter(|checkpoint| checkpoint.org == *org)
+            .cloned()
     }
 
     /// Resolves once the view has changed since this handle last waited.
@@ -277,6 +355,18 @@ pub(crate) fn task(row: &impl Columns) -> Result<Task, Report<MetaError>> {
         input,
         outcome: outcome.map(|Json(outcome)| outcome),
         created_at: row.get("created_at")?,
+    })
+}
+
+pub(crate) fn checkpoint(row: &impl Columns) -> Result<Checkpoint, Report<MetaError>> {
+    Ok(Checkpoint {
+        id: RequestId(row.get("id")?),
+        org: OrgId(row.get("org_id")?),
+        model: ModelId(row.get("model_id")?),
+        name: row.get("name")?,
+        prefix: row.get("prefix")?,
+        base: row.get("base")?,
+        base_revision: row.get("base_revision")?,
     })
 }
 

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use error_stack::Report;
-use metrl_types::{ModelId, Seq, ServerId, WorkerId};
+use metrl_types::{ModelId, RequestId, Seq, ServerId, WorkerId};
 use pgwire_replication::{ReplicationClient, ReplicationConfig, ReplicationEvent};
 use tokio::sync::watch;
 use tokio_postgres::config::Host;
@@ -151,7 +151,7 @@ async fn replicate(
                 decode(data, &mut relations, &mut pending)?;
             }
             ReplicationEvent::Commit { end_lsn, .. } => {
-                state.send_modify(|state| pending.drain(..).for_each(|change| state.apply(change)));
+                commit(state, &mut pending);
                 stream.update_applied_lsn(end_lsn);
             }
             // Transactions that touch no published table send no Commit, so
@@ -172,6 +172,15 @@ async fn replicate(
         }
     }
     Err(Report::new(MetaError::Cdc).attach("change stream closed"))
+}
+
+/// Applies a committed transaction's changes to the view at once, so readers
+/// never see half of it.
+fn commit(state: &watch::Sender<State>, pending: &mut Vec<Change>) {
+    // Chaos tests stand for a server whose stream lags behind every commit
+    // after its scan.
+    fail::fail_point!("cdc_skip_commits", |_| pending.clear());
+    state.send_modify(|state| pending.drain(..).for_each(|change| state.apply(change)));
 }
 
 fn replication_config(config: &tokio_postgres::Config, slot: &str) -> ReplicationConfig {
@@ -243,6 +252,10 @@ async fn scan(store: &Store, snapshot: &str, state: &mut State) -> Result<(), Re
         .query(include_str!("../sql/select_tasks.sql"), &[])
         .await
         .change_context(MetaError::Query)?;
+    let checkpoints = transaction
+        .query(include_str!("../sql/select_checkpoints.sql"), &[])
+        .await
+        .change_context(MetaError::Query)?;
     transaction
         .commit()
         .await
@@ -255,6 +268,9 @@ async fn scan(store: &Store, snapshot: &str, state: &mut State) -> Result<(), Re
     }
     for row in &tasks {
         state.apply(Change::PutTask(view::task(row)?));
+    }
+    for row in &checkpoints {
+        state.apply(Change::PutCheckpoint(view::checkpoint(row)?));
     }
     Ok(())
 }
@@ -295,6 +311,7 @@ fn decode(
                     "api_keys" => Change::ClearKeys,
                     "workers" => Change::ClearWorkers,
                     "tasks" => Change::ClearTasks,
+                    "checkpoints" => Change::ClearCheckpoints,
                     table => return Err(unpublished(table)),
                 });
             }
@@ -314,6 +331,7 @@ fn put(relation: &Relation, row: &[Value]) -> Result<Change, Report<MetaError>> 
         "api_keys" => view::api_key(&row),
         "workers" => view::worker(&row),
         "tasks" => view::task(&row).map(Change::PutTask),
+        "checkpoints" => view::checkpoint(&row).map(Change::PutCheckpoint),
         table => Err(unpublished(table)),
     }
 }
@@ -340,6 +358,11 @@ fn delete(relation: &Relation, key: &[Value]) -> Result<Change, Report<MetaError
             Ok(Change::DeleteTask {
                 model: ModelId(row.get("model_id")?),
                 seq: Seq(row.get::<i64>("seq")? as u64),
+            })
+        }
+        "checkpoints" => {
+            Ok(Change::DeleteCheckpoint {
+                id: RequestId(row.get("id")?),
             })
         }
         table => Err(unpublished(table)),

@@ -2,10 +2,11 @@
 //! lease runs; every write an owner makes names its generation and is
 //! rejected once a newer generation took the model over.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use error_stack::{Report, ResultExt};
-use metrl_types::{Generation, ModelId, OrgId, Outcome, Seq, ServerId, WorkerId};
+use metrl_types::{Generation, ModelId, OrgId, Outcome, RequestId, Seq, ServerId, WorkerId};
 use tokio_postgres::types::Json;
 
 use crate::view::Columns;
@@ -24,6 +25,18 @@ pub struct Lease {
     pub seed: u64,
     /// The trainer that holds the model's state, if any task has run.
     pub worker: Option<WorkerId>,
+}
+
+/// The checkpoint a `save_weights_for_sampler` task wrote. Its base, revision,
+/// and rank are the model's.
+pub struct NewCheckpoint<'a> {
+    /// The save's request.
+    pub id: RequestId,
+    pub name: Option<&'a str>,
+    pub prefix: &'a str,
+    pub size_bytes: u64,
+    pub ttl_seconds: Option<u64>,
+    pub user_metadata: &'a BTreeMap<String, String>,
 }
 
 /// Bounds each owner write. A link that freezes mid-query would otherwise
@@ -85,6 +98,43 @@ impl Store {
             seq,
             outcome,
         )
+        .await
+    }
+
+    /// Records a finished save with the checkpoint it wrote and advances
+    /// `applied` to it. When another of the model's checkpoints holds the
+    /// name, records `name_taken` instead and no checkpoint. False once a
+    /// newer generation owns the model.
+    pub async fn complete_save(
+        &self, lease: &Lease, seq: Seq, saved: &Outcome, name_taken: &Outcome,
+        checkpoint: &NewCheckpoint<'_>,
+    ) -> Result<bool, Report<MetaError>> {
+        // Sizes and ttls are stored as bigint; the casts round-trip.
+        bounded(async {
+            let row = self
+                .client()
+                .await?
+                .query_one(
+                    include_str!("../sql/complete_save.sql"),
+                    &[
+                        &lease.model.0,
+                        &(lease.generation.0 as i64),
+                        &(seq.0 as i64),
+                        &Json(saved),
+                        &Json(name_taken),
+                        &lease.org.0,
+                        &checkpoint.id.0,
+                        &checkpoint.name,
+                        &checkpoint.prefix,
+                        &(checkpoint.size_bytes as i64),
+                        &checkpoint.ttl_seconds.map(|ttl| ttl as i64),
+                        &Json(checkpoint.user_metadata),
+                    ],
+                )
+                .await
+                .change_context(MetaError::Query)?;
+            Columns::get(&row, "owned")
+        })
         .await
     }
 

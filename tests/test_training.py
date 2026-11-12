@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import math
 import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 import tinker
-from conftest import SERVER, Cluster, spawn, wait_for
+from conftest import SERVER, Cluster, free_ports, spawn, wait_for
 from tinker import types
 from tinker.proto.request_conv import forward_backward_request_to_proto
 from tinker.proto.response_conv import deserialize_forward_backward_output
@@ -30,14 +31,14 @@ def datum(targets: list[int]) -> tinker.Datum:
 
 async def train(client: tinker.ServiceClient, targets: list[int]) -> list[Any]:
     """Two pipelined steps, then a forward pass; returns every observable result."""
-    training = await client.create_lora_training_client_async(base_model="mock", rank=8, seed=5)
+    training = await client.create_lora_training_client(base_model="mock", rank=8, seed=5)
     trace: list[Any] = []
     for _ in range(2):
-        backward = await training.forward_backward_async([datum(targets)], "cross_entropy")
-        step = await training.optim_step_async(ADAM)
+        backward = training.forward_backward([datum(targets)], "cross_entropy")
+        step = training.optim_step(ADAM)
         output, applied = await backward, await step
         trace += [output.loss_fn_outputs[0]["logprobs"].tolist(), output.metrics, applied.metrics]
-    forward = await (await training.forward_async([datum(targets)], "cross_entropy"))
+    forward = await training.forward([datum(targets)], "cross_entropy")
     return [*trace, forward.loss_fn_outputs[0]["logprobs"].tolist()]
 
 
@@ -56,7 +57,7 @@ def test_training_sdk_and_isolation(cluster: Cluster) -> None:
         assert trace[2] != trace[5], "both steps must change the model state"
 
     asyncio.run(run())
-    training = alpha.create_lora_training_client(base_model="mock", rank=4)
+    training = alpha.create_lora_training_client(base_model="mock", rank=4).result()
     info = training.get_info()
     assert (info.model_data.model_name, info.model_data.tokenizer_id) == ("mock", "Qwen/Qwen3-0.6B")
     assert info.lora_rank == 4
@@ -360,3 +361,312 @@ def test_engine_call_slower_than_the_rpc_timeouts_applies_once(cluster: Cluster)
         ran = [outcome(client, alpha, request, timeout=60) for request in requests]
         expected = [outcome(client, alpha, submit(client, alpha, reference, seq)) for seq in (1, 2)]
         assert ran == expected, "a slow step must apply exactly once and report its result"
+
+
+def sample(client: httpx.Client, headers: dict[str, str], sampling_session: str) -> httpx.Response:
+    """Submits one seeded sample of `[2, 7, 11]` as the session's seq 0."""
+    body = {
+        "sampling_session_id": sampling_session,
+        "seq_id": 0,
+        "num_samples": 1,
+        "prompt": {"chunks": [{"type": "encoded_text", "tokens": [2, 7, 11]}]},
+        "sampling_params": {
+            "max_tokens": 4,
+            "seed": 3,
+            "temperature": 1.0,
+            "top_k": -1,
+            "top_p": 1.0,
+        },
+    }
+    return client.post("/api/v1/asample", headers=headers, json=body)
+
+
+def sampled(client: httpx.Client, headers: dict[str, str], sampling_session: str) -> bytes:
+    """The encoded result of `sample` on `sampling_session`."""
+    future = sample(client, headers, sampling_session)
+    assert future.status_code == 200, future.text
+    response = result(client, headers, future.json()["request_id"])
+    assert response.status_code == 200, response.text
+    return response.content
+
+
+async def trained(client: tinker.ServiceClient) -> tinker.TrainingClient:
+    training = await client.create_lora_training_client(base_model="mock", rank=8, seed=5)
+    backward = training.forward_backward([datum([7, 11, 4, 9])], "cross_entropy")
+    step = training.optim_step(ADAM)
+    await backward
+    await step
+    return training
+
+
+def test_sampler_saves_sdk_and_isolation(cluster: Cluster) -> None:
+    alpha = tinker.ServiceClient(base_url=cluster.url, api_key=cluster.key("alpha"))
+    beta = tinker.ServiceClient(base_url=cluster.url, api_key=cluster.key("beta"))
+
+    async def run() -> None:
+        ours, theirs = await asyncio.gather(trained(alpha), trained(beta))
+        # Names are per model, so another org's model may reuse one.
+        saved, other = await asyncio.gather(
+            ours.save_weights_for_sampler("step-1"),
+            theirs.save_weights_for_sampler("step-1"),
+        )
+        assert saved.path == f"tinker://{ours.model_id}/sampler_weights/step-1"
+        assert other.path == f"tinker://{theirs.model_id}/sampler_weights/step-1"
+        # Errors are checked over HTTP: the SDK waits 30s to report each one
+        # to a telemetry route Metrl does not serve.
+        prompt = tinker.ModelInput.from_ints([2, 7, 11])
+        params = tinker.SamplingParams(max_tokens=8, seed=3)
+
+        async def tokens(sampler: tinker.SamplingClient) -> list[int]:
+            return (await sampler.sample(prompt, 1, params)).sequences[0].tokens
+
+        step_1, their_step_1, base = await asyncio.gather(
+            tokens(await alpha.create_sampling_client(model_path=saved.path)),
+            tokens(await beta.create_sampling_client(model_path=other.path)),
+            tokens(await alpha.create_sampling_client(base_model="mock")),
+        )
+        assert step_1 != base, "sampling a checkpoint must apply its weights"
+        assert their_step_1 == step_1, "models trained alike must sample alike in any org"
+        unnamed = await ours.save_weights_and_get_sampling_client()
+        assert await tokens(unnamed) == step_1, "the same weights must sample the same"
+        await ours.forward_backward([datum([7, 11, 4, 9])], "cross_entropy")
+        await ours.optim_step(ADAM)
+        step_2 = await ours.save_weights_and_get_sampling_client()
+        assert await tokens(step_2) != step_1, "a later checkpoint must sample its own weights"
+
+    asyncio.run(run())
+
+
+def test_sampler_save_routes(cluster: Cluster) -> None:
+    alpha = {"x-api-key": cluster.key("alpha")}
+    beta = {"x-api-key": cluster.key("beta")}
+    with httpx.Client(base_url=cluster.url, timeout=30) as client:
+        session = client.post("/api/v1/create_session", headers=alpha).json()["session_id"]
+        model = create(client, alpha, session, 0)
+        for seq in (1, 2):
+            outcome(client, alpha, submit(client, alpha, model, seq))
+
+        def save(headers: dict[str, str], seq: int, **fields: object) -> httpx.Response:
+            body = {"model_id": model, "seq_id": seq} | fields
+            return client.post("/api/v1/save_weights_for_sampler", headers=headers, json=body)
+
+        for invalid in (
+            {"path": "a", "sampling_session_seq_id": 0},
+            {},
+            # The name ends a tinker:// path.
+            {"path": "a/b"},
+            # Below the table's check, which would fail the commit forever.
+            {"path": "a", "ttl_seconds": 60},
+            {"path": "a", "kind": "inflight"},
+        ):
+            assert save(alpha, 3, **invalid).status_code == 400, invalid
+        named = {"path": "step-2", "ttl_seconds": 3600, "user_metadata": {"step": "2"}}
+        request = save(alpha, 3, **named).json()
+        assert save(alpha, 3, **named).json() == request
+        assert save(alpha, 3, path="other").status_code == 400
+        assert save(beta, 3, **named).status_code == 404
+        path = f"tinker://{model}/sampler_weights/step-2"
+        assert outcome(client, alpha, request["request_id"]) == {
+            "path": path,
+            "type": "save_weights_for_sampler",
+        }
+        taken = outcome(client, alpha, save(alpha, 4, path="step-2").json()["request_id"])
+        assert isinstance(taken, dict) and taken["category"] == "user", taken
+        # The failed save must not stall the model's later tasks.
+        unnamed = save(alpha, 5, sampling_session_seq_id=0).json()["request_id"]
+        assert outcome(client, alpha, unnamed) == {
+            "sampling_session_id": unnamed,
+            "type": "save_weights_for_sampler",
+        }
+
+        def sampler(headers: dict[str, str], seq: int, model_path: str) -> httpx.Response:
+            sampler_session = sessions[headers["x-api-key"]]
+            body = {
+                "session_id": sampler_session,
+                "sampling_session_seq_id": seq,
+                "model_path": model_path,
+            }
+            return client.post("/api/v1/create_sampling_session", headers=headers, json=body)
+
+        sessions = {
+            headers["x-api-key"]: client.post("/api/v1/create_session", headers=headers).json()[
+                "session_id"
+            ]
+            for headers in (alpha, beta)
+        }
+        named_sampler = sampler(alpha, 0, path).json()
+        assert sampler(alpha, 0, path).json() == named_sampler
+        assert sampler(beta, 0, path).status_code == 404
+        assert sampler(alpha, 1, f"tinker://{model}/weights/step-2").status_code == 400
+        assert sampler(alpha, 2, f"tinker://{model}/sampler_weights/missing").status_code == 404
+
+        assert sample(client, beta, unnamed).status_code == 404
+
+        def sampler_record(headers: dict[str, str], sampler: str) -> httpx.Response:
+            return client.get(f"/api/v1/samplers/{sampler}", headers=headers)
+
+        named_session = named_sampler["sampling_session_id"]
+        assert sampler_record(alpha, named_session).json() == {
+            "sampler_id": named_session,
+            "base_model": "mock",
+            "model_path": path,
+        }
+        assert sampler_record(alpha, unnamed).json() == {
+            "sampler_id": unnamed,
+            "base_model": "mock",
+            "model_path": None,
+        }
+        assert sampler_record(beta, named_session).status_code == 404
+        assert sampler_record(beta, unnamed).status_code == 404
+        # Both saves hold the weights after seq 2, the last step before them.
+        samples = [
+            sampled(client, alpha, session)
+            for session in (named_sampler["sampling_session_id"], unnamed)
+        ]
+        assert samples[0] == samples[1]
+
+
+PROMPT = [2, 7, 11]
+
+
+def rl_datum(completion: list[int], logprobs: list[float], advantage: float) -> tinker.Datum:
+    """An `importance_sampling` datum that trains on the completion only."""
+    tokens = [*PROMPT, *completion]
+    prompt = len(PROMPT) - 1
+    return tinker.Datum(
+        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64"),
+            "logprobs": tinker.TensorData(data=[0.0] * prompt + logprobs, dtype="float32"),
+            "advantages": tinker.TensorData(
+                data=[0.0] * prompt + [advantage] * len(completion), dtype="float32"
+            ),
+        },
+    )
+
+
+async def rl(client: tinker.ServiceClient, wanted: int) -> list[Any]:
+    """Three rounds of sample, reward, and train with `importance_sampling`,
+    rewarding tokens of parity `wanted`; returns every observable result."""
+    training = await client.create_lora_training_client(base_model="mock", rank=8, seed=5)
+    trace: list[Any] = []
+    for _ in range(3):
+        sampler = await training.save_weights_and_get_sampling_client()
+        sampled = await sampler.sample(
+            tinker.ModelInput.from_ints(PROMPT), 4, tinker.SamplingParams(max_tokens=6, seed=1)
+        )
+        completions = [(s.tokens, s.logprobs or []) for s in sampled.sequences]
+        rewards = [
+            sum(token % 2 == wanted for token in tokens) / len(tokens) for tokens, _ in completions
+        ]
+        data = [rl_datum(*c, r) for c, r in zip(completions, rewards, strict=True)]
+        backward = training.forward_backward(data, "importance_sampling")
+        step = training.optim_step(ADAM)
+        output, applied = await backward, await step
+        for (_, sampled_logprobs), out in zip(completions, output.loss_fn_outputs, strict=True):
+            learner = out["logprobs"].tolist()[len(PROMPT) - 1 :]
+            assert learner == pytest.approx(sampled_logprobs, abs=1e-6), (
+                "the trainer must score sampled tokens as the sampler drew them"
+            )
+        # On-policy the ratio is 1, so the loss is minus the summed advantages.
+        expected = -sum(r * len(t) for (t, _), r in zip(completions, rewards, strict=True))
+        assert output.metrics["loss:sum"] == pytest.approx(expected, rel=1e-5)
+        trace += [[tokens for tokens, _ in completions], output.metrics, applied.metrics]
+    # Halving the sampler's probabilities doubles every ratio; `forward`
+    # scores both at the same weights and leaves them as they were.
+    halved = [
+        rl_datum(tokens, [lp - math.log(2) for lp in logprobs], r)
+        for (tokens, logprobs), r in zip(completions, rewards, strict=True)
+    ]
+    same = await training.forward(data, "importance_sampling")
+    off_policy = await training.forward(halved, "importance_sampling")
+    assert off_policy.metrics["loss:sum"] == pytest.approx(2 * same.metrics["loss:sum"], rel=1e-5)
+    return trace
+
+
+def test_importance_sampling_loop(cluster: Cluster) -> None:
+    alpha = tinker.ServiceClient(base_url=cluster.url, api_key=cluster.key("alpha"))
+    beta = tinker.ServiceClient(base_url=cluster.url, api_key=cluster.key("beta"))
+
+    async def run() -> None:
+        interleaved = await asyncio.gather(rl(alpha, 1), rl(beta, 0))
+        alone = [await rl(alpha, 1), await rl(beta, 0)]
+        assert interleaved == alone, "one org's RL loop changed another org's"
+        ours, theirs = interleaved
+        assert ours[0] == theirs[0], "both orgs start from the same weights"
+        assert ours[2] != theirs[2], "different advantages must train different weights"
+        assert ours[3] != ours[0], "each round must sample the weights the last one trained"
+
+    asyncio.run(run())
+
+
+def test_server_whose_view_lags_samples_a_checkpoint_saved_through_it(
+    cluster: Cluster, tmp_path: Path
+) -> None:
+    """A second server applies no commit after its startup scan, standing for one
+    whose CDC lags. It answers a save from Postgres once the model's owner ran
+    it; sampling that checkpoint there right away must not return 404, which
+    the SDK does not retry."""
+    alpha = {"x-api-key": cluster.key("alpha")}
+    http, grpc, system = free_ports(3)
+    lagging_env = cluster.env | {
+        "METRL_HTTP_ADDR": f"127.0.0.1:{http}",
+        "METRL_GRPC_ADDR": f"127.0.0.1:{grpc}",
+        "METRL_SYSTEM_ADDR": f"127.0.0.1:{system}",
+        "FAILPOINTS": "cdc_skip_commits=return",
+    }
+    with ExitStack() as stack:
+        owner = stack.enter_context(httpx.Client(base_url=cluster.url, timeout=30))
+        session = owner.post("/api/v1/create_session", headers=alpha).json()["session_id"]
+        model = create(owner, alpha, session, 0)
+        # A finished task means the first server holds the model's lease, so the
+        # lagging server never runs it.
+        outcome(owner, alpha, submit(owner, alpha, model, 1))
+        spawn(stack, [SERVER], lagging_env, stack.enter_context((tmp_path / "lag.log").open("wb")))
+        lagging = stack.enter_context(httpx.Client(base_url=f"http://127.0.0.1:{http}", timeout=30))
+
+        def session_on(client: httpx.Client, headers: dict[str, str]) -> httpx.Response:
+            return client.post("/api/v1/create_session", headers=headers)
+
+        def serving() -> bool:
+            try:
+                return session_on(lagging, alpha).status_code == 200
+            except httpx.TransportError:
+                return False
+
+        wait_for(serving, "the lagging server never answered")
+        late = {"x-api-key": cluster.key("late")}
+        assert session_on(lagging, late).status_code == 401, (
+            "the lagging server applied a commit; build it with --features failpoints"
+        )
+
+        def save(seq: int, **fields: object) -> str:
+            body = {"model_id": model, "seq_id": seq} | fields
+            response = lagging.post("/api/v1/save_weights_for_sampler", headers=alpha, json=body)
+            assert response.status_code == 200, response.text
+            return response.json()["request_id"]
+
+        path = f"tinker://{model}/sampler_weights/fresh"
+        named = save(2, path="fresh")
+        assert outcome(lagging, alpha, named, timeout=30) == {
+            "path": path,
+            "type": "save_weights_for_sampler",
+        }
+        unnamed = save(3, sampling_session_seq_id=0)
+        assert outcome(lagging, alpha, unnamed, timeout=30) == {
+            "sampling_session_id": unnamed,
+            "type": "save_weights_for_sampler",
+        }
+
+        def samples(client: httpx.Client) -> list[bytes]:
+            body = {
+                "session_id": session_on(client, alpha).json()["session_id"],
+                "sampling_session_seq_id": 0,
+                "model_path": path,
+            }
+            created = client.post("/api/v1/create_sampling_session", headers=alpha, json=body)
+            assert created.status_code == 200, created.text
+            session = created.json()["sampling_session_id"]
+            return [sampled(client, alpha, session), sampled(client, alpha, unnamed)]
+
+        assert samples(lagging) == samples(owner), "the lagging server sampled other weights"

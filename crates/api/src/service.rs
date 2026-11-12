@@ -60,6 +60,7 @@ pub fn router(sampling: Sampling, training: Training, shutdown: CancellationToke
             "/get_server_capabilities",
             routing::get(sampling::capabilities),
         )
+        .route("/samplers/{sampler_id}", routing::get(sampling::sampler))
         .route("/asample", routing::post(sampling::sample))
         .route("/create_model", routing::post(training::create_model))
         .route("/get_info", routing::post(training::get_info))
@@ -68,6 +69,10 @@ pub fn router(sampling: Sampling, training: Training, shutdown: CancellationToke
             routing::post(training::forward_backward).layer(DefaultBodyLimit::max(MAX_BODY)),
         )
         .route("/optim_step", routing::post(training::optim_step))
+        .route(
+            "/save_weights_for_sampler",
+            routing::post(training::save_weights_for_sampler),
+        )
         .route("/retrieve_future", routing::post(futures::retrieve))
         .with_state(Services {
             sampling,

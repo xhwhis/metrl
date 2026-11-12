@@ -1,5 +1,6 @@
 //! Worker runtime: gRPC service, object I/O, and the engine seam.
 
+mod adapter;
 mod engine;
 mod error;
 mod runtime;
@@ -9,6 +10,9 @@ mod tinker;
 pub mod tinker_public;
 mod training;
 
-pub use engine::{DType, Datum, ForwardBackward, ForwardBackwardOutput, Sampler, Tensor, Trainer};
+pub use engine::{
+    Adapter, AdapterWeights, DType, Datum, ForwardBackward, ForwardBackwardOutput, Sampler, Tensor,
+    Trainer,
+};
 pub use error::WorkerError;
 pub use runtime::{Identity, serve};

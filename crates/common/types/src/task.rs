@@ -17,6 +17,16 @@ pub struct Generation(pub u64);
 pub enum TaskInput {
     ForwardBackward,
     OptimStep(AdamParams),
+    SaveWeightsForSampler {
+        /// Set for a named save, which answers with a `tinker://` path;
+        /// exactly one of this and `sampling_session_seq_id` is set.
+        name: Option<String>,
+        /// Set for an unnamed save, which answers with a sampling session.
+        sampling_session_seq_id: Option<u64>,
+        /// `None` never expires.
+        ttl_seconds: Option<u64>,
+        user_metadata: BTreeMap<String, String>,
+    },
 }
 
 /// Tinker `AdamParams`.
@@ -38,6 +48,9 @@ pub enum Outcome {
     ForwardBackward { output_key: String },
     /// Metric values are finite, because the column is JSON.
     OptimStep { metrics: BTreeMap<String, f64> },
+    /// The adapter's files are under `prefix`, and the task's checkpoint row
+    /// points to them.
+    SaveWeightsForSampler { prefix: String, size_bytes: u64 },
     Failed {
         category: ErrorCategory,
         message: String,

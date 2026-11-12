@@ -6,6 +6,8 @@ package metrl.worker;
 // fail with FAILED_PRECONDITION when another worker answers at the address.
 service WorkerService {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // INVALID_ARGUMENT for a request the engine cannot run as given; its
+  // message is shown to the user.
   rpc Sample(SampleRequest) returns (SampleResponse);
   // Makes `generation` the model's owner on this worker, creating the trainer
   // state on first bind. ABORTED for an older generation than the bound one.
@@ -37,6 +39,7 @@ message ExecuteRequest {
   oneof task {
     ForwardBackward forward_backward = 5;
     AdamParams optim_step = 6;
+    SaveWeightsForSampler save_weights_for_sampler = 7;
   }
 }
 
@@ -62,6 +65,7 @@ message ExecuteResponse {
     ForwardBackwardDone forward_backward = 1;
     OptimStepDone optim_step = 2;
     TaskFailed failed = 3;
+    SaveWeightsForSamplerDone save_weights_for_sampler = 4;
   }
 }
 
@@ -73,6 +77,21 @@ message ForwardBackwardDone {
 
 message OptimStepDone {
   map<string, double> metrics = 1;
+}
+
+// Writes the model's current adapter under `prefix`, which is unique to the
+// request and generation: `adapter_model.safetensors`, `adapter_config.json`,
+// then `manifest.json`.
+message SaveWeightsForSampler {
+  string prefix = 1;
+}
+
+message SaveWeightsForSamplerDone {
+  // The `prefix` of the call that ran the task. A repeated call after a
+  // takeover returns the earlier generation's prefix.
+  string prefix = 1;
+  // Total size of the files written.
+  uint64 size_bytes = 2;
 }
 
 message TaskFailed {
@@ -87,20 +106,51 @@ enum ErrorCategory {
 }
 
 message SampleRequest {
+  // The sampling session.
   string model_id = 1;
-  repeated int32 prompt = 2;
-  uint32 num_samples = 3;
-  uint32 max_length = 4;
-  uint64 seed = 5;
-  string worker_id = 6;
+  string base_model = 2;
+  repeated int32 prompt = 3;
+  uint32 num_samples = 4;
+  uint32 max_tokens = 5;
+  // Unset samples differently on every call.
+  optional uint64 seed = 6;
+  string worker_id = 7;
+  // The saved adapter's object prefix, or empty for the bare base.
+  string adapter = 8;
+  double temperature = 9;
+  // -1 for no limit.
+  int32 top_k = 10;
+  double top_p = 11;
+  // Unset keeps the engine's implicit end-of-sequence stop.
+  Stop stop = 12;
+  bool prompt_logprobs = 13;
+}
+
+// At most one of the lists is non-empty; both empty disables every stop.
+message Stop {
+  repeated int32 tokens = 1;
+  repeated string strings = 2;
 }
 
 message SampleResponse {
   repeated SampledSequence sequences = 1;
+  // With `prompt_logprobs`, one per prompt token, NaN for the first, which has
+  // no context; otherwise empty.
+  repeated float prompt_logprobs = 2;
 }
 
 message SampledSequence {
   repeated int32 tokens = 1;
+  // One per token, under the distribution it was drawn from.
+  repeated float logprobs = 2;
+  StopReason stop_reason = 3;
+}
+
+// Tinker's values. Every sequence stops for one of them, so there is no
+// unspecified value.
+enum StopReason {
+  STOP_REASON_STOP = 0;
+  STOP_REASON_LENGTH = 1;
 }
 
 message DescribeRequest {}

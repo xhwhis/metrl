@@ -10,13 +10,14 @@ use metrl_types::WorkerId;
 use tonic::{Request, Response, Status};
 
 use crate::training::Training;
-use crate::{Sampler, Trainer, WorkerError};
+use crate::{Adapter, Sampler, Trainer, WorkerError};
 
 pub(crate) struct Worker<S, T> {
     pub(crate) id: WorkerId,
     pub(crate) bases: Vec<worker::Base>,
     pub(crate) sampler: S,
     pub(crate) training: Arc<Training<T>>,
+    pub(crate) object: metrl_object::Store,
 }
 
 impl<S, T> Worker<S, T> {
@@ -49,11 +50,40 @@ impl<S: Sampler, T: Trainer> WorkerService for Worker<S, T> {
     ) -> Result<Response<SampleResponse>, Status> {
         let request = request.into_inner();
         self.addressed(&request.worker_id)?;
-        self.sampler
-            .sample(request)
+        let num_samples = request.num_samples as usize;
+        let max_tokens = request.max_tokens as usize;
+        let prompt_logprobs = if request.prompt_logprobs {
+            request.prompt.len()
+        } else {
+            0
+        };
+        let adapter = (!request.adapter.is_empty()).then(|| {
+            Adapter {
+                prefix: request.adapter.clone(),
+                object: self.object.clone(),
+            }
+        });
+        let response = self
+            .sampler
+            .sample(request, adapter)
             .await
-            .map(Response::new)
-            .map_err(|report| status(&report))
+            .map_err(|report| status(&report))?;
+        if response.sequences.len() != num_samples
+            || response
+                .sequences
+                .iter()
+                .any(|sequence| sequence.tokens.len() > max_tokens)
+            || response.prompt_logprobs.len() != prompt_logprobs
+        {
+            let report = Report::new(WorkerError::Failed).attach(format!(
+                "engine returned {} sequences and {} prompt logprobs for {num_samples} samples of \
+                 at most {max_tokens} tokens and {prompt_logprobs} prompt logprobs",
+                response.sequences.len(),
+                response.prompt_logprobs.len()
+            ));
+            return Err(status(&report));
+        }
+        Ok(Response::new(response))
     }
 
     async fn bind(&self, request: Request<BindRequest>) -> Result<Response<BindResponse>, Status> {

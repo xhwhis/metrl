@@ -10,12 +10,12 @@ use error_stack::Report;
 use metrl_object::ObjectError;
 use metrl_proto::worker::{
     self, BindRequest, ExecuteRequest, ExecuteResponse, ForwardBackwardDone, OptimStepDone,
-    TaskFailed, execute_request, execute_response,
+    SaveWeightsForSamplerDone, TaskFailed, execute_request, execute_response,
 };
 use metrl_types::{AdamParams, Generation, ModelId, Seq};
 use parking_lot::Mutex;
 
-use crate::{Trainer, WorkerError, tinker};
+use crate::{Trainer, WorkerError, adapter, tinker};
 
 /// The server's worker client gives up after 30 seconds. A call that waits
 /// longer for the model's slot answers `Unavailable` before then, so the
@@ -35,6 +35,8 @@ pub(crate) struct Training<T> {
 /// A model whose trainer state lives on this worker.
 struct Bound {
     generation: Generation,
+    /// Named in a saved adapter's config.
+    base: String,
     /// The last task that ran, so a repeated call returns its response
     /// instead of applying it twice.
     last: Option<Ran>,
@@ -45,8 +47,9 @@ struct Bound {
 struct Ran {
     seq: Seq,
     response: ExecuteResponse,
-    /// Output not yet in the object store; a repeated call writes it.
-    unwritten: Option<Output>,
+    /// Outputs not yet in the object store, in write order; a repeated call
+    /// writes the rest.
+    unwritten: Vec<Output>,
 }
 
 struct Output {
@@ -82,10 +85,11 @@ impl<T: Trainer> Training<T> {
             Some(bound) => bound.generation = generation,
             None => {
                 self.trainer
-                    .create(model, &request.base, request.lora_rank, request.seed)
+                    .create_model(model, &request.base, request.lora_rank, request.seed)
                     .await?;
                 *guard = Some(Bound {
                     generation,
+                    base: request.base,
                     last: None,
                 });
             }
@@ -120,16 +124,19 @@ impl<T: Trainer> Training<T> {
                 let task = request.task.ok_or_else(|| {
                     Report::new(WorkerError::Failed).attach("execute request has no task")
                 })?;
-                bound.last = Some(self.run(model, seq, task).await?);
+                bound.last = Some(self.run(model, seq, &bound.base, task).await?);
             }
         }
         let last = bound
             .last
             .as_mut()
             .expect("the task that ran or repeated is the last one");
-        if let Some(output) = &last.unwritten {
+        // In order, so a checkpoint's manifest lands after its files.
+        while let Some(output) = last.unwritten.first() {
             match self.object.put(&output.key, output.body.clone()).await {
-                Ok(()) => last.unwritten = None,
+                Ok(()) => {
+                    last.unwritten.remove(0);
+                }
                 // Retrying cannot store the output, so the step fails rather
                 // than hold the model forever.
                 Err(report) if matches!(report.current_context(), ObjectError::Rejected) => {
@@ -137,7 +144,7 @@ impl<T: Trainer> Training<T> {
                     last.response = ExecuteResponse {
                         outcome: Some(failed(seq, &report)),
                     };
-                    last.unwritten = None;
+                    last.unwritten.clear();
                 }
                 Err(report) => return Err(report.change_context(WorkerError::Unavailable)),
             }
@@ -150,7 +157,7 @@ impl<T: Trainer> Training<T> {
     /// Runs the task on the engine. Fails, keeping nothing, only on an object
     /// store failure that a retry may get past; every other outcome is kept.
     async fn run(
-        &self, model: ModelId, seq: Seq, task: execute_request::Task,
+        &self, model: ModelId, seq: Seq, base: &str, task: execute_request::Task,
     ) -> Result<Ran, Report<WorkerError>> {
         let (outcome, unwritten) = match task {
             execute_request::Task::ForwardBackward(task) => {
@@ -167,9 +174,9 @@ impl<T: Trainer> Training<T> {
                                     key: task.output_key,
                                     body,
                                 };
-                                (done, Some(output))
+                                (done, vec![output])
                             }
-                            Err(report) => (failed(seq, &report), None),
+                            Err(report) => (failed(seq, &report), Vec::new()),
                         }
                     }
                     // A missing or forbidden input fails the task instead of
@@ -177,7 +184,7 @@ impl<T: Trainer> Training<T> {
                     Err(report) if matches!(report.current_context(), ObjectError::Rejected) => {
                         (
                             failed(seq, &report.change_context(WorkerError::Failed)),
-                            None,
+                            Vec::new(),
                         )
                     }
                     Err(report) => return Err(report.change_context(WorkerError::Unavailable)),
@@ -200,7 +207,30 @@ impl<T: Trainer> Training<T> {
                         })
                     },
                 );
-                (outcome, None)
+                (outcome, Vec::new())
+            }
+            execute_request::Task::SaveWeightsForSampler(task) => {
+                match self.save_weights_for_sampler(model, base).await {
+                    Ok(files) => {
+                        let outputs: Vec<_> = files
+                            .into_iter()
+                            .map(|file| {
+                                Output {
+                                    key: format!("{}{}", task.prefix, file.name),
+                                    body: file.body,
+                                }
+                            })
+                            .collect();
+                        let done = execute_response::Outcome::SaveWeightsForSampler(
+                            SaveWeightsForSamplerDone {
+                                prefix: task.prefix,
+                                size_bytes: outputs.iter().map(|o| o.body.len() as u64).sum(),
+                            },
+                        );
+                        (done, outputs)
+                    }
+                    Err(report) => (failed(seq, &report), Vec::new()),
+                }
             }
         };
         Ok(Ran {
@@ -237,6 +267,14 @@ impl<T: Trainer> Training<T> {
                 .attach(format!("engine returned metric {key} = {value}")));
         }
         Ok(metrics)
+    }
+
+    /// The files of the model's current adapter, in write order.
+    async fn save_weights_for_sampler(
+        &self, model: ModelId, base: &str,
+    ) -> Result<Vec<adapter::File>, Report<WorkerError>> {
+        let weights = self.trainer.save_weights_for_sampler(model).await?;
+        adapter::files(&weights, base)
     }
 }
 

@@ -1,6 +1,7 @@
 //! Configuration files with `METRL_` environment overrides. Nested keys use
 //! `__` as the separator, e.g. `METRL_HTTP_ADDR` or `METRL_ENGINE__NAME`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -83,11 +84,19 @@ impl fmt::Debug for ObjectConfig {
 pub struct EngineConfig {
     /// Selects the `metrl.engines.<name>` package.
     pub name: String,
+    /// `[engine.<name>]` tables. The selected engine gets its own as is, so
+    /// Rust never needs to know an engine's settings.
+    #[serde(flatten)]
+    pub sections: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct BaseConfig {
+    /// The name clients use.
     pub name: String,
+    /// What the engine loads, such as a Hugging Face repository or a local
+    /// directory; `None` loads `name`.
+    pub path: Option<String>,
     pub roles: Vec<Role>,
 }
 

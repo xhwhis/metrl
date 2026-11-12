@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -162,6 +164,76 @@ pub(crate) async fn optim_step(
     ))
 }
 
+/// The longest ttl Tinker accepts: ten years.
+const MAX_TTL_SECONDS: u64 = 10 * 365 * 24 * 3600;
+
+#[derive(Deserialize)]
+pub(crate) struct SaveWeightsForSampler {
+    model_id: ModelId,
+    seq_id: Option<u64>,
+    /// The checkpoint's name; unnamed saves send `sampling_session_seq_id`.
+    path: Option<String>,
+    sampling_session_seq_id: Option<u64>,
+    kind: Option<String>,
+    ttl_seconds: Option<u64>,
+    user_metadata: Option<BTreeMap<String, String>>,
+}
+
+pub(crate) async fn save_weights_for_sampler(
+    Org(org): Org, State(training): State<Training>,
+    ApiJson(request): ApiJson<SaveWeightsForSampler>,
+) -> Result<Json<Value>, ApiError> {
+    if request.kind.is_some_and(|kind| kind != "snapshot") {
+        return Err(Report::new(ServerError::Invalid(
+            "only snapshot sampling clients are supported",
+        ))
+        .into());
+    }
+    let seq = request
+        .seq_id
+        .ok_or_else(|| Report::new(ServerError::Invalid("seq_id is required")))?;
+    if request.path.is_some() == request.sampling_session_seq_id.is_some() {
+        return Err(Report::new(ServerError::Invalid(
+            "exactly one of path and sampling_session_seq_id must be set",
+        ))
+        .into());
+    }
+    // The name ends a `tinker://` path, so it cannot hold a `/`.
+    let valid_name = |name: &String| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if request.path.as_ref().is_some_and(|name| !valid_name(name)) {
+        return Err(Report::new(ServerError::Invalid(
+            "path may only hold ASCII letters, digits, '-', '_', and '.'",
+        ))
+        .into());
+    }
+    if request
+        .ttl_seconds
+        .is_some_and(|ttl| !(3600..=MAX_TTL_SECONDS).contains(&ttl))
+    {
+        return Err(Report::new(ServerError::Invalid(
+            "ttl_seconds must be between 3600 and ten years",
+        ))
+        .into());
+    }
+    let input = TaskInput::SaveWeightsForSampler {
+        name: request.path,
+        sampling_session_seq_id: request.sampling_session_seq_id,
+        ttl_seconds: request.ttl_seconds,
+        user_metadata: request.user_metadata.unwrap_or_default(),
+    };
+    let id = training
+        .submit(&org, request.model_id, Seq(seq), input, None)
+        .await?;
+    Ok(Json(
+        json!({"request_id": id, "model_id": request.model_id}),
+    ))
+}
+
 /// The answer for a finished training request, or `None` while it is pending.
 pub(crate) fn response(result: TrainingResult) -> Option<Response> {
     let response = match result {
@@ -173,6 +245,13 @@ pub(crate) fn response(result: TrainingResult) -> Option<Response> {
             ([("content-type", "application/x-protobuf")], output).into_response()
         }
         TrainingResult::OptimStep(metrics) => Json(json!({"metrics": metrics})).into_response(),
+        TrainingResult::SamplerPath(path) => {
+            Json(json!({"path": path, "type": "save_weights_for_sampler"})).into_response()
+        }
+        TrainingResult::SamplingSession(id) => {
+            Json(json!({"sampling_session_id": id, "type": "save_weights_for_sampler"}))
+                .into_response()
+        }
         TrainingResult::Failed { category, message } => {
             Json(json!({"error": message, "category": category})).into_response()
         }

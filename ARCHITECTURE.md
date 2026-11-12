@@ -6,9 +6,10 @@ state. The task log makes training recoverable; user saves are durable snapshots
 
 ## Current implementation
 
-The runnable slice is token-only sampling and LoRA training on the mock engine through
+The runnable slice is token-only sampling of bases and saved adapters, and LoRA training,
+on the mock engine, and on the MLX engine on Apple silicon, through
 the real Tinker SDK: HTTP → Rust server → task log in Postgres → model actor → gRPC
-worker → PyO3 → async Python mock engine → protobuf or JSON future result.
+worker → PyO3 → async Python engine → protobuf or JSON future result.
 
 - Control plane: Postgres holds orgs, API keys (sha256 only), workers, models, and
   tasks. Each server follows keys, workers, and tasks through CDC into an in-memory
@@ -21,17 +22,33 @@ worker → PyO3 → async Python mock engine → protobuf or JSON future result.
   a worker bound to a wildcard address must set `advertise_addr`. Workers re-register
   every 10s. On SIGINT/SIGTERM a worker unregisters, keeps serving for 1s while the
   removal reaches every server, then lets requests in flight finish for up to 30s; a
-  second signal exits at once. Sampling picks a registered worker that serves the base
-  and names it in the request, so a different process at that address rejects it.
+  second signal exits at once. Sampling picks the registered worker that serves the
+  base and ranks first for the checkpoint id, or for the sampling session on a bare base
+  (rendezvous hashing, so every server agrees and a joining or leaving worker moves only
+  its own keys), and names it in the request, so a different process at that address
+  rejects it. The worker gives the engine an `Adapter` whose `key` is the checkpoint's
+  immutable prefix and whose `load()` downloads and decodes it in Rust; engines cache
+  loaded adapters by key.
 - Sampling state: sessions, sampling sessions, and results are in the receiving
   server's memory, isolated by org. Retrying the same sampling session and sequence
   returns the same request; changed inputs return 400. Results expire one hour after
   submission, or 60s after a finished result is first read; then they are gone (410)
   and the SDK resubmits. Each org holds at most 1024 sessions, sampling sessions,
   and samples per server.
-- Mock sampler: `max_tokens` (1–256), `num_samples` (1–16), and `seed`, with prompts of
-  1–4096 nonnegative token IDs. Other options must stay at SDK defaults; other values
-  return 400. Output is deterministic tokens, not language-model output.
+- Sampling options: `max_tokens` (1–256), `num_samples` (1–16), `seed`, `temperature`
+  (≥ 0), `top_k` (-1 or ≥ 1), `top_p` (0, 1], `stop` (at most 64 strings or token ids),
+  and `prompt_logprobs`, with prompts of 1–4096 nonnegative token IDs. Other values
+  return 400, as do top-k logprobs, target or alternative prompt logprobs,
+  `prompt_logprobs_last_n`, and stability info. Sampled logprobs are under the
+  distribution the token was drawn from, after temperature, `top_k`, and `top_p`; prompt
+  logprobs are under the model's own distribution. An engine's rejection, such as a
+  string stop on the mock, fails the future as a user error with the engine's message.
+- Mock sampler: a fake language model over token IDs below 256 whose logits follow from
+  the weights (base name, or adapter digest) and the tokens before. A seed reproduces
+  samples, and no seed draws a fresh one. It has no tokenizer and no end-of-sequence
+  token, so only token-id stops end a sequence early, and prompt logprobs need prompt
+  IDs below 256. It keeps the 8 most recently used adapters, and requests that arrive
+  while one loads wait for that load.
 - Task log: every server renews its model leases every 3s, takes over every model whose
   lease is free or expired, and runs one actor per owned model; it stops all of them
   when no renewal was sent for 7s. A server whose view is stale (30s without a
@@ -44,21 +61,50 @@ worker → PyO3 → async Python mock engine → protobuf or JSON future result.
   second step. Forward-backward inputs and outputs are Tinker protobufs in the object
   store; the worker decodes them into `TensorData`, which crosses to Python through
   the buffer protocol.
-- Mock trainer: `cross_entropy` only, with deterministic logprobs. `optim_step` returns
-  `state_hash:unique`, a digest of every applied step, so tests can tell whether each
-  step applied exactly once.
+- Mock trainer: `cross_entropy` (`target_tokens`, `weights`) and `importance_sampling`
+  (`target_tokens`, sampler `logprobs`, `advantages`; loss `-Σ exp(logprob − sampler
+  logprob) · advantage`), both returning `logprobs` and `loss:sum`. Logprobs come from
+  the mock sampler's language model under the adapter the trainer would save, so
+  on-policy logprobs match the sampler's and every importance ratio is 1; targets must be
+  below 256. `optim_step` returns `state_hash:unique`, a digest of every applied step, so
+  tests can tell whether each step applied exactly once.
+- MLX engine (Apple silicon): loads each base with `mlx_lm` once for both roles; its
+  revision is a digest of the loaded weights and config, and its `tokenizer_id` is the
+  Hugging Face repository it loaded, or the name for a local directory. LoRA of rank
+  up to 64 covers every attention and MLP linear (not the unembedding yet), scaled by
+  32 / rank as in Tinker, and trains with AdamW (bias-corrected, global grad-norm
+  clipping); losses as on the mock, with logprobs in float32. All models share the
+  resident base: each call installs its own low-rank deltas first. Sampling decodes all
+  samples of a request as one batch over the prompt's KV cache; without `stop` it ends
+  at the tokenizer's end-of-sequence tokens, and stop strings end a sequence once its
+  decoded completion contains one. Inputs shorter than 9 tokens are padded for training,
+  since MLX 0.32's short-query attention kernels have no backward pass.
 - Training API: `create_model` checks the base and rank against a registered trainer,
   stores the model, and answers with a finished future; a retry with the same session
   and `model_seq_id` returns the same model. `forward_backward` (also `forward`) and
   `optim_step` append to the task log as described in Training path. `get_info` and
   `retrieve_future` read Postgres or the view. The mock base reports the
   `Qwen/Qwen3-0.6B` tokenizer so that SDK tokenizer calls work, and LoRA rank up to 64.
+- Sampler saves: `save_weights_for_sampler` is a task. The trainer writes
+  `adapter_model.safetensors`, `adapter_config.json`, then `manifest.json` under
+  `orgs/{org}/models/{model}/sampler_weights/{request}/g{generation}/`, and the owner
+  inserts the `checkpoints` row in the statement that commits the outcome. A named
+  save answers with `tinker://{model}/sampler_weights/{name}`, and a name already
+  used by the model fails the task as a user error. An unnamed save answers with the
+  checkpoint's id as a sampling session. `create_sampling_session` and `asample`
+  find a checkpoint in the view, or in Postgres when the view lags a save that
+  `retrieve_future` already answered from Postgres. `GET /samplers/{id}` answers
+  with the session's base model and, for a named save, its `tinker://` path; the SDK
+  calls it when it creates a sampling client from a path. Only `snapshot` saves are
+  supported.
 
-Not implemented yet: checkpoints and weight saving, so a model whose trainer leaves
-fails every later task; loss functions other than `cross_entropy`, `loss_fn_config`,
+Not implemented yet: training-state saves, and recovery from a
+checkpoint, so a model whose trainer leaves fails every later task; checkpoint expiry
+and sweep; loss functions other than `cross_entropy` and `importance_sampling`,
+`loss_fn_config`,
 and optimizers other than AdamW; zstd request bodies; task output expiry;
 lease release on shutdown, so a restarted server's models wait up to 10s; placement
-beyond hashing the model id; peer routing, MLX, revision conflict checks, dead-worker
+by load; peer routing, revision conflict checks, dead-worker
 detection for workers that exit without unregistering, TLS to Postgres,
 authenticated worker registration, and the 408 `paused_capacity` /
 `paused_rate_limit` queue states (408 always reports `active`). A server restart loses sampling state. The sections
@@ -71,11 +117,16 @@ just setup
 just db-reset           # Postgres with an empty schema
 just dev                # server on 7580 (HTTP) and 7581 (gRPC)
 just worker             # mock worker from config/worker.toml
+just worker config/worker-mlx.toml   # or MLX on Qwen3-0.6B, on Apple silicon
 just key local          # prints a new tml-… key for org "local"
 ```
 
 Connect with `tinker.ServiceClient(base_url="http://127.0.0.1:7580", api_key=<key>)`
-and create sampling or LoRA training clients with `base_model="mock"`. `just up`
+and create sampling or LoRA training clients with `base_model="mock"` (or
+`"Qwen/Qwen3-0.6B"` on the MLX worker). With the MLX worker running, `just rl <key>`
+runs `scripts/rl_loop.py`, the M2 acceptance: Qwen3-0.6B learns two-digit
+multiplication by RL through the SDK, and it fails unless the reward on held-out
+problems rises by 0.1. `just up`
 creates the `metrl` bucket in the local RustFS. Local Postgres uses trust auth on
 127.0.0.1; deployments pass credentials in `METRL_DATABASE_URL`.
 
@@ -180,7 +231,7 @@ it events and carries out its effects.
 ## Sampling path
 
 Sampling skips the task log. The receiving server picks a sampler by adapter affinity,
-load, and session stickiness, and keeps the result in memory (1h TTL, byte cap). Other
+then session stickiness, then load, and keeps the result in memory (1h TTL, byte cap). Other
 servers fetch it with peer `GetSampleResult`; if the holder is gone they return 410 and
 the SDK resubmits. Bases stay resident; LoRA adapters load lazily from immutable paths
 into an LRU of 8.
@@ -220,9 +271,16 @@ can hold both roles over a shared base, or roles can run separately.
 
 `metrl-py` exposes `metrl._core`. Python owns the event loop (uvloop); Rust async
 functions are awaitable from Python and run on the pyo3-async-runtimes tokio runtime.
-Tensors cross as `TensorData` through the buffer protocol. Engines implement async
-`Trainer` and `Sampler` Protocols and run blocking compute on `ComputeThread`. Every
-call carries `ctx` (request_id, model_id, seq, trace_id, deadline, `cancelled()`).
+Tensors cross as `TensorData` through the buffer protocol. An engine package exports
+`load(settings, bases, compute)`, which gets its `[engine.<name>]` table, the configured
+bases, and the worker's one `ComputeThread`, and returns the loaded `Base` for each
+configured base plus a `Trainer` and a `Sampler`. Their async methods follow Tinker
+names (`create_model`, `forward`, `forward_backward`, `optim_step`,
+`save_weights_for_sampler`, `sample`), carry `model_id`, and run blocking compute on
+the compute thread with `await compute.run(fn)`, one call at a time. Engines return
+tensors and adapter metadata only; the worker's Rust runtime encodes and stores them.
+Every call is to carry `ctx` (request_id, model_id, seq, trace_id, deadline,
+`cancelled()`); today calls carry `model_id` only.
 
 ## Tenancy and admission
 
@@ -241,7 +299,8 @@ Workers are shared and scheduled weighted round-robin per org.
 `config/server.toml` and `config/worker.toml`, overridden by `METRL_` environment
 variables with `__` between nested keys (`METRL_HTTP_ADDR`, `METRL_ENGINE__NAME`).
 Secrets come only from the environment. Rust validates its own keys; `[engine] name`
-selects the engine package, and the rest of `[engine]` is to be passed through to it.
+selects the engine package, which gets its `[engine.<name>]` table as is and validates
+it.
 Ports: server 7580 HTTP, 7581 gRPC, 7582 system; worker 7590 gRPC, 7591 system. System
 ports are cluster-internal and unauthenticated. The server gRPC port (worker
 registration) is also cluster-internal and unauthenticated, and binds loopback by

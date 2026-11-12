@@ -74,6 +74,11 @@ async fn serve_grpc(
 async fn serve(config: ServerConfig, store: metrl_meta::Store) -> Result<(), Report<ServerError>> {
     use tracing::Instrument;
     let system = metrl_telemetry::init().change_context(ServerError)?;
+    // Only a `failpoints` build reads `FAILPOINTS`. The configuration lasts
+    // as long as the process, so its guard is never dropped.
+    if fail::has_failpoints() {
+        std::mem::forget(fail::FailScenario::setup());
+    }
     let server = ServerId(Uuid::now_v7());
     let mut cdc = metrl_meta::follow(store.clone(), server);
     cdc.ready().await;
@@ -89,7 +94,7 @@ async fn serve(config: ServerConfig, store: metrl_meta::Store) -> Result<(), Rep
         .attach_with(|| format!("open object store {:?}", config.object))?;
     let training =
         metrl_server::Training::new(store.clone(), view.clone(), workers.clone(), object);
-    let sampling = metrl_server::Sampling::new(view, workers);
+    let sampling = metrl_server::Sampling::new(view, workers, store.clone());
     // The API also ends its long polls on this token; the HTTP drain would
     // otherwise wait for them.
     let shutdown = CancellationToken::new();

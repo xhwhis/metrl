@@ -26,13 +26,17 @@ db-reset:
 dev: up
     METRL_OBJECT__SECRET_ACCESS_KEY=metrl-dev-secret cargo run -p metrl-bin --bin metrl-server
 
-# Run a worker with config/worker.toml against the local object store
-worker:
-    METRL_OBJECT__SECRET_ACCESS_KEY=metrl-dev-secret uv run --no-sync metrl-worker
+# Run a worker against the local object store; config/worker-mlx.toml runs MLX on Qwen3-0.6B
+worker config="config/worker.toml":
+    METRL_OBJECT__SECRET_ACCESS_KEY=metrl-dev-secret uv run --no-sync metrl-worker --config {{config}}
 
 # Create an API key for an org and print it
 key org:
     cargo run -q -p metrl-bin --bin metrl-server -- key create --org {{org}}
+
+# RL acceptance on Qwen3-0.6B against `just dev` and `just worker config/worker-mlx.toml`
+rl key:
+    TINKER_API_KEY={{key}} uv run --no-sync python scripts/rl_loop.py
 
 fmt:
     cargo fmt --all
@@ -54,7 +58,7 @@ lint:
 
 test: up
     cargo nextest run --workspace --all-targets --all-features --no-tests=pass
-    cargo build -p metrl-bin --bin metrl-server
+    cargo build -p metrl-bin --bin metrl-server --features failpoints
     uv run --no-sync maturin develop --uv --generate-stubs
     uv run --no-sync pytest -q
 

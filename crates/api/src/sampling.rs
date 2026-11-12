@@ -1,8 +1,8 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use error_stack::Report;
-use metrl_proto::worker::SampleRequest;
+use metrl_proto::worker::{self, SampleRequest};
 use metrl_server::{SampleResult, Sampling, ServerError};
 use metrl_types::{ModelId, Role, SessionId};
 use serde::Deserialize;
@@ -48,24 +48,43 @@ pub(crate) struct CreateSampler {
 pub(crate) async fn create_sampler(
     Org(org): Org, State(service): State<Sampling>, ApiJson(request): ApiJson<CreateSampler>,
 ) -> Result<Json<Value>, ApiError> {
-    if request.model_path.is_some() {
-        return Err(Report::new(ServerError::Invalid(
-            "checkpoint sampling is not implemented",
-        ))
-        .into());
-    }
-    let base = request
-        .base_model
-        .ok_or_else(|| Report::new(ServerError::Invalid("base_model is required")))?;
-    let id = service.create_sampler(
-        &org,
-        request.session_id,
-        request.sampling_session_seq_id,
-        &base,
-    )?;
+    // The checkpoint names its base, so `base_model` is ignored with a path.
+    let id = if let Some(path) = request.model_path {
+        service
+            .create_checkpoint_sampler(
+                &org,
+                request.session_id,
+                request.sampling_session_seq_id,
+                &path,
+            )
+            .await?
+    } else {
+        let base = request
+            .base_model
+            .ok_or_else(|| Report::new(ServerError::Invalid("base_model is required")))?;
+        service.create_sampler(
+            &org,
+            request.session_id,
+            request.sampling_session_seq_id,
+            &base,
+        )?
+    };
     Ok(Json(
         json!({"sampling_session_id": id, "type": "create_sampling_session"}),
     ))
+}
+
+pub(crate) async fn sampler(
+    Org(org): Org, State(service): State<Sampling>, Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    use error_stack::ResultExt;
+    let model = uuid::Uuid::parse_str(&id)
+        .map(ModelId)
+        .change_context(ServerError::Invalid("sampler_id must be a UUID"))?;
+    let sampler = service.sampler(&org, model).await?;
+    Ok(Json(json!({
+        "sampler_id": id, "base_model": sampler.base, "model_path": sampler.model_path,
+    })))
 }
 
 pub(crate) async fn capabilities(_: Org, State(service): State<Sampling>) -> Json<Value> {
@@ -120,11 +139,48 @@ enum Chunk {
 struct Params {
     max_tokens: Option<u32>,
     seed: Option<u64>,
-    stop: Option<Value>,
+    stop: Option<Stop>,
     temperature: f64,
     top_k: i32,
     top_p: f64,
 }
+
+/// Tinker's `stop`: a string, strings, or token ids.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Stop {
+    String(String),
+    Strings(Vec<String>),
+    Tokens(Vec<i32>),
+}
+
+impl Stop {
+    fn into_proto(self) -> worker::Stop {
+        match self {
+            Self::String(string) => {
+                worker::Stop {
+                    tokens: Vec::new(),
+                    strings: vec![string],
+                }
+            }
+            Self::Strings(strings) => {
+                worker::Stop {
+                    tokens: Vec::new(),
+                    strings,
+                }
+            }
+            Self::Tokens(tokens) => {
+                worker::Stop {
+                    tokens,
+                    strings: Vec::new(),
+                }
+            }
+        }
+    }
+}
+
+/// Stops one request may name; each one costs a check per generated token.
+const MAX_STOPS: usize = 64;
 
 pub(crate) async fn sample(
     Org(org): Org, State(service): State<Sampling>, ApiJson(request): ApiJson<Sample>,
@@ -139,54 +195,72 @@ pub(crate) async fn sample(
             }
         })
         .collect();
-    let max_length = request.sampling_params.max_tokens.unwrap_or(16);
+    let params = request.sampling_params;
+    let max_tokens = params.max_tokens.unwrap_or(16);
     if request.num_samples == 0
         || request.num_samples > 16
-        || max_length == 0
-        || max_length > 256
+        || max_tokens == 0
+        || max_tokens > 256
         || prompt.is_empty()
         || prompt.len() > 4096
         || prompt.iter().any(|&t| t < 0)
-        || !request.sampling_params.temperature.is_finite()
-        || request.sampling_params.temperature < 0.0
-        || request.sampling_params.top_k < -1
-        || !(0.0..=1.0).contains(&request.sampling_params.top_p)
+        || !params.temperature.is_finite()
+        || params.temperature < 0.0
+        || params.top_k == 0
+        || params.top_k < -1
+        || params.top_p <= 0.0
+        || params.top_p > 1.0
     {
         return Err(Report::new(ServerError::Invalid(
             "invalid sampling limits or parameters",
         ))
         .into());
     }
-    if request.prompt_logprobs
-        || request.topk_prompt_logprobs > 0
+    let stop = params.stop.map(Stop::into_proto);
+    if stop.as_ref().is_some_and(|stop| {
+        stop.tokens.len() + stop.strings.len() > MAX_STOPS
+            || stop.tokens.iter().any(|&t| t < 0)
+            || stop.strings.iter().any(String::is_empty)
+    }) {
+        return Err(Report::new(ServerError::Invalid(
+            "stop must be at most 64 non-empty strings or nonnegative token ids",
+        ))
+        .into());
+    }
+    if request.topk_prompt_logprobs > 0
         || request.topk_sample_logprobs > 0
         || request.target_prompt_logprobs.is_some()
         || request.prompt_alt_tokens_k > 0
         || request.prompt_logprobs_last_n.is_some()
         || request.record_stability_info
-        || request.sampling_params.stop.is_some()
-        || !matches!(request.sampling_params.temperature, 1.0)
-        || request.sampling_params.top_k != -1
-        || !matches!(request.sampling_params.top_p, 1.0)
     {
         return Err(Report::new(ServerError::Invalid(
-            "this sampling option is not implemented by the mock engine",
+            "this sampling option is not implemented yet",
         ))
         .into());
     }
-    let id = service.sample(
-        &org,
-        request.sampling_session_id,
-        request.seq_id,
-        SampleRequest {
-            model_id: String::new(),
-            prompt,
-            num_samples: request.num_samples,
-            max_length,
-            seed: request.sampling_params.seed.unwrap_or(0),
-            worker_id: String::new(),
-        },
-    )?;
+    let id = service
+        .sample(
+            &org,
+            request.sampling_session_id,
+            request.seq_id,
+            SampleRequest {
+                model_id: String::new(),
+                base_model: String::new(),
+                prompt,
+                num_samples: request.num_samples,
+                max_tokens,
+                seed: params.seed,
+                worker_id: String::new(),
+                adapter: String::new(),
+                temperature: params.temperature,
+                top_k: params.top_k,
+                top_p: params.top_p,
+                stop,
+                prompt_logprobs: request.prompt_logprobs,
+            },
+        )
+        .await?;
     let sequence_ids: Vec<_> = (0..request.num_samples)
         .map(|i| format!("{}-{i}", id.0))
         .collect();
@@ -200,29 +274,45 @@ pub(crate) fn response(result: SampleResult) -> Option<Response> {
     use prost::Message;
     match result {
         SampleResult::Pending => None,
-        SampleResult::Failed => {
-            Some(
-                Json(json!({"error": "worker sampling failed", "category": "server"}))
-                    .into_response(),
-            )
+        SampleResult::Failed { category, message } => {
+            Some(Json(json!({"error": message, "category": category})).into_response())
         }
         SampleResult::Complete(result) => {
+            let prompt_logprobs = (!result.prompt_logprobs.is_empty()).then(|| {
+                result
+                    .prompt_logprobs
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+                    .collect()
+            });
             let result = crate::tinker_public::SampleResponse {
                 sequences: result
                     .sequences
                     .into_iter()
                     .map(|sequence| {
+                        let stop_reason = match sequence.stop_reason() {
+                            worker::StopReason::Stop => crate::tinker_public::StopReason::Stop,
+                            worker::StopReason::Length => crate::tinker_public::StopReason::Length,
+                        };
                         crate::tinker_public::SampledSequence {
-                            stop_reason: crate::tinker_public::StopReason::Length as i32,
+                            stop_reason: stop_reason as i32,
                             tokens: sequence
                                 .tokens
                                 .into_iter()
                                 .flat_map(i32::to_le_bytes)
                                 .collect(),
+                            logprobs: Some(
+                                sequence
+                                    .logprobs
+                                    .into_iter()
+                                    .flat_map(f32::to_le_bytes)
+                                    .collect(),
+                            ),
                             ..Default::default()
                         }
                     })
                     .collect(),
+                prompt_logprobs,
                 ..Default::default()
             };
             Some(

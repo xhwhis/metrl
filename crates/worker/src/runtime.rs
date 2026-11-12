@@ -95,7 +95,8 @@ pub async fn serve<S: Sampler, T: Trainer>(
             id: identity.id,
             bases: identity.bases,
             sampler,
-            training: Arc::new(Training::new(trainer, object)),
+            training: Arc::new(Training::new(trainer, object.clone())),
+            object,
         }))
         .serve_with_incoming_shutdown(TcpIncoming::from(listener), unregistered.cancelled());
     let served = tokio::select! {

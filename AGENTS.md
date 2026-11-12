@@ -26,8 +26,8 @@ Read ARCHITECTURE.md for the design and docs/decisions/ for why.
 Prerequisites: Rust nightly, Rust 1.99.0 with `cargo-hawk`, `protoc`, `uv`, `just`, `prek`,
 `taplo`, `typos`, `cargo-shear`, `cargo-nextest`, Docker; `samply` for profiling.
 
-`just setup | up | db-reset | dev | worker | key | fmt | lint | test | check | tinker-proto |
-profile`
+`just setup | up | db-reset | dev | worker | key | rl | fmt | lint | test | check |
+tinker-proto | profile`
 
 `just check` runs everything CI runs except the stable-toolchain build.
 

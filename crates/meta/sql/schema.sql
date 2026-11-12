@@ -59,4 +59,28 @@ CREATE TABLE tasks (
     FOREIGN KEY (model_id, org_id) REFERENCES models (id, org_id)
 );
 
-CREATE PUBLICATION metrl FOR TABLE api_keys, workers, tasks;
+CREATE TABLE checkpoints (
+    -- The request id of the save that wrote it. An unnamed save's id is also
+    -- the sampling session id it answers with.
+    id uuid PRIMARY KEY,
+    org_id text NOT NULL REFERENCES orgs (id),
+    model_id uuid NOT NULL,
+    FOREIGN KEY (model_id, org_id) REFERENCES models (id, org_id),
+    seq bigint NOT NULL CHECK (seq > 0),
+    -- NULL for an unnamed save; NULLs never conflict.
+    name text,
+    UNIQUE (model_id, name),
+    -- Object key prefix of the files, ending in `/`.
+    prefix text NOT NULL,
+    base text NOT NULL,
+    base_revision text NOT NULL,
+    lora_rank integer NOT NULL CHECK (lora_rank > 0),
+    size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
+    -- NULL never expires.
+    ttl_seconds bigint CHECK (ttl_seconds >= 3600),
+    expires_at timestamptz,
+    user_metadata jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE PUBLICATION metrl FOR TABLE api_keys, workers, tasks, checkpoints;

@@ -17,3 +17,6 @@ pub enum ServerError {
     #[error("internal error: {0}")]
     Internal(&'static str),
 }
+
+/// A Postgres failure as the API reports it; the SDK retries it.
+pub(crate) const DATABASE: ServerError = ServerError::Unavailable("database unavailable");

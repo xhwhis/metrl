@@ -103,6 +103,7 @@ clap = { version = "4", features = ["derive"] }
 config = { version = "0.15", default-features = false, features = ["toml"] }
 deadpool-postgres = "0.14"
 error-stack = { version = "0.8", default-features = false, features = ["std"] }
+fail = "0.5"
 getrandom = "0.4"
 insta = "1"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

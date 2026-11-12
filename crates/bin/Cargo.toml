@@ -7,6 +7,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+failpoints = ["metrl-meta/failpoints"]
+
 [[bin]]
 name = "metrl-server"
 path = "src/main.rs"
@@ -15,6 +18,7 @@ path = "src/main.rs"
 axum = { workspace = true }
 clap = { workspace = true }
 error-stack = { workspace = true }
+fail = { workspace = true }
 getrandom = { workspace = true }
 metrl-api = { workspace = true }
 metrl-config = { workspace = true }

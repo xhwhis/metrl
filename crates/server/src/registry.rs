@@ -120,31 +120,32 @@ impl Workers {
         bases
     }
 
-    /// A worker serving `base` at `revision` for `role`. Picks by `spread` so
-    /// that callers spread load without shared counters.
+    /// The worker serving `base` at `revision` for `role` that ranks first
+    /// for `affinity`. Every server ranks alike without coordinating, and
+    /// when a worker joins or leaves only the keys it ranks first for move.
     pub(crate) fn pick(
-        &self, base: &str, revision: &str, role: Role, spread: u64,
+        &self, base: &str, revision: &str, role: Role, affinity: Uuid,
     ) -> Result<Live, Report<ServerError>> {
-        let candidates: Vec<_> = self
-            .live()
+        use sha2::Digest;
+        self.live()
             .into_iter()
             .filter(|live| {
                 live.bases.iter().any(|known| {
                     known.name == base && known.revision == revision && known.roles.contains(&role)
                 })
             })
-            .collect();
-        if candidates.is_empty() {
-            return Err(
+            .max_by_key(|live| {
+                <[u8; 32]>::from(
+                    sha2::Sha256::new()
+                        .chain_update(affinity.as_bytes())
+                        .chain_update(live.id.0.as_bytes())
+                        .finalize(),
+                )
+            })
+            .ok_or_else(|| {
                 Report::new(ServerError::Unavailable("no worker serves the base"))
-                    .attach(format!("base {base} revision {revision}, role {role:?}")),
-            );
-        }
-        let index = (spread % candidates.len() as u64) as usize;
-        Ok(candidates
-            .into_iter()
-            .nth(index)
-            .expect("the index is reduced modulo the number of candidates"))
+                    .attach(format!("base {base} revision {revision}, role {role:?}"))
+            })
     }
 }
 

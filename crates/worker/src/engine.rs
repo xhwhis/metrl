@@ -12,16 +12,37 @@ use metrl_types::{AdamParams, ModelId};
 use crate::WorkerError;
 
 pub trait Sampler: Send + Sync + 'static {
+    /// Samples `request` on its base, with `adapter` applied when it is set.
     fn sample(
-        &self, request: SampleRequest,
+        &self, request: SampleRequest, adapter: Option<Adapter>,
     ) -> impl Future<Output = Result<SampleResponse, Report<WorkerError>>> + Send;
+}
+
+/// A saved adapter that a sampler loads only on a cache miss.
+#[derive(Clone)]
+pub struct Adapter {
+    pub(crate) prefix: String,
+    pub(crate) object: metrl_object::Store,
+}
+
+impl Adapter {
+    /// Names the adapter's files, which never change once saved, so engines
+    /// may cache what `load` returns under it.
+    pub fn key(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Downloads and decodes the adapter's files.
+    pub async fn load(&self) -> Result<AdapterWeights, Report<WorkerError>> {
+        crate::adapter::load(&self.object, &self.prefix).await
+    }
 }
 
 /// Holds each model's trainer state. Calls for one model never overlap.
 pub trait Trainer: Send + Sync + 'static {
     /// Creates the model's fresh trainer state.
-    fn create(
-        &self, model: ModelId, base: &str, lora_rank: u32, seed: u64,
+    fn create_model(
+        &self, model: ModelId, base_model: &str, rank: u32, seed: u64,
     ) -> impl Future<Output = Result<(), Report<WorkerError>>> + Send;
 
     fn forward_backward(
@@ -30,8 +51,25 @@ pub trait Trainer: Send + Sync + 'static {
 
     /// Applies the gradients accumulated since the last step.
     fn optim_step(
-        &self, model: ModelId, params: AdamParams,
+        &self, model: ModelId, adam_params: AdamParams,
     ) -> impl Future<Output = Result<BTreeMap<String, f64>, Report<WorkerError>>> + Send;
+
+    /// The model's current adapter weights, without optimizer state or
+    /// gradients pending a step.
+    fn save_weights_for_sampler(
+        &self, model: ModelId,
+    ) -> impl Future<Output = Result<AdapterWeights, Report<WorkerError>>> + Send;
+}
+
+/// A low-rank adapter in PEFT layout: `rank`, `alpha`, and `target_modules`
+/// go to `adapter_config.json`, and the tensors to
+/// `adapter_model.safetensors`.
+#[derive(Clone, Debug)]
+pub struct AdapterWeights {
+    pub rank: u32,
+    pub alpha: f64,
+    pub target_modules: Vec<String>,
+    pub tensors: BTreeMap<String, Tensor>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
